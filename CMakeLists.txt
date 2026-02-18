@@ -4,11 +4,16 @@ project(VitaCashu C)
 set(CMAKE_C_STANDARD 11)
 
 add_executable(VitaCashu main.c
-        crypto.c
-        crypto.h)
+        cashu/protocol.c
+        cashu/protocol.h
+        cashu/models.c
+        cashu/models.h)
 add_subdirectory(deps/secp256k1)
+add_subdirectory(deps/cjson)
+add_subdirectory(deps/qcbor)
 target_link_libraries(${PROJECT_NAME}
         secp256k1
+        qcbor
         mbedtls
         mbedcrypto
         mbedx509

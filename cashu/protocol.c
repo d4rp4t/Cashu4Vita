@@ -1,7 +1,7 @@
 //
 // Created by d4rp4t on 18/02/2026.
 //
-#include "crypto.h"
+#include "protocol.h"
 #include <stdint.h>
 #include <mbedtls/sha256.h>
 #include <secp256k1.h>
@@ -10,7 +10,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-static const uint8_t *DOMAIN_SEPARATOR = "Secp256k1_HashToCurve_Cashu_";
+static const char *DOMAIN_SEPARATOR = "Secp256k1_HashToCurve_Cashu_";
 static secp256k1_context *ctx = NULL;
 
 typedef enum {
@@ -56,7 +56,7 @@ int hash_to_curve(const uint8_t *x, const size_t x_len, secp256k1_pubkey *out){
         return 1;
     };
 
-    // grind untill we get a valid ec pubkey
+    // grind until we get a valid ec pubkey
     for (uint32_t i = 0; i < UINT32_MAX; i++) {
         uint8_t point_bytes[33];
         *point_bytes = 0x02;

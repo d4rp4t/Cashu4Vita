@@ -1,8 +1,8 @@
 //
 // Created by d4rp4t on 18/02/2026.
 //
-#ifndef CRYPTO_H
-#define CRYPTO_H
+#ifndef PROTOCOL_H
+#define PROTOCOL_H
 #include <secp256k1.h>
 #include <stdint.h>
 
@@ -24,4 +24,4 @@ int unblind(
     const secp256k1_pubkey *A,
     secp256k1_pubkey *out
 );
-#endif //CRYPTO_H
+#endif //PROTOCOL_H

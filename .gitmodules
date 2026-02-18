@@ -1,3 +1,9 @@
 [submodule "deps/secp256k1"]
 	path = deps/secp256k1
 	url = https://github.com/bitcoin-core/secp256k1
+[submodule "deps/cjson"]
+	path = deps/cjson
+	url = https://github.com/DaveGamble/cJSON
+[submodule "deps/qcbor"]
+	path = deps/qcbor
+	url = https://github.com/laurencelundblade/QCBOR
