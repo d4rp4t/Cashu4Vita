@@ -2,13 +2,12 @@
 // Created by d4rp4t on 18/02/2026.
 //
 #include "protocol.h"
+#include "utils.h"
 #include <stdint.h>
 #include <mbedtls/sha256.h>
 #include <secp256k1.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 
 static const char *DOMAIN_SEPARATOR = "Secp256k1_HashToCurve_Cashu_";
 static secp256k1_context *ctx = NULL;
@@ -94,11 +93,7 @@ int hex_to_curve(const char *hex, size_t hex_len, secp256k1_pubkey *out) {
     uint8_t *bytes = malloc(bytes_len);
     if (!bytes) return 0;
 
-    for (size_t i = 0; i < bytes_len; i++) {
-        unsigned int byte;
-        sscanf(hex + i * 2, "%02x", &byte);
-        bytes[i] = (uint8_t)byte;
-    }
+    hex_decode(hex, bytes, bytes_len);
 
     int result = hash_to_curve(bytes, bytes_len, out);
     free(bytes);
@@ -141,7 +136,7 @@ int unblind(
 
     // C' + (-rA)
     const secp256k1_pubkey *points[2] = { C_, &rA };
-    if (!secp256k1_ec_pubkey_combine(ctx, out, (const secp256k1_pubkey **)points, 2)) return 1;
+    if (!secp256k1_ec_pubkey_combine(ctx, out, points, 2)) return 1;
 
     return 0;
 }

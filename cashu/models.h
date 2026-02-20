@@ -2,8 +2,8 @@
 // Created by d4rp4t on 18/02/2026.
 //
 
-#ifndef CASHU_PROOF_H
-#define CASHU_PROOF_H
+#ifndef CASHU_MODELS_H
+#define CASHU_MODELS_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -32,10 +32,7 @@ typedef struct {
     char *unit;
     proof_t *proofs;
     size_t proof_count;
+    char *memo;
 } token_t;
-
-// serialization
-int token_encode (const token_t *token, char *out);
-int token_decode (const char *json, token_t *out);
 
 #endif
