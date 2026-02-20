@@ -12,6 +12,10 @@ cmake -B $BUILD_DIR \
     -DSECP256K1_BUILD_BENCHMARK=OFF \
     -S .
 
-cmake --build $BUILD_DIR --target test_hash_to_curve
+cmake --build $BUILD_DIR --target test_hash_to_curve test_blind
 
+echo "── hash_to_curve ──"
 $BUILD_DIR/test_hash_to_curve
+
+echo "── blind ──"
+$BUILD_DIR/test_blind

@@ -28,9 +28,9 @@ add_subdirectory(deps/qcbor)
 add_executable(${PROJECT_NAME}
         main.c
         cashu/protocol.c
-        cashu/models.c
+        cashu/encoding.c
         cashu/utils.c
-        tests/test_blinded_messages.c)
+)
 
 target_link_libraries(${PROJECT_NAME}
         secp256k1
@@ -41,15 +41,17 @@ target_link_libraries(${PROJECT_NAME}
         m)
 
 if(NOT CMAKE_CROSSCOMPILING)
-    add_executable(test_hash_to_curve
-            tests/test_hash_to_curve.c
-            cashu/protocol.c
-            cashu/utils.c)
-    target_include_directories(test_hash_to_curve PRIVATE
-            deps/secp256k1/include
-            /opt/homebrew/include)
-    target_link_directories(test_hash_to_curve PRIVATE /opt/homebrew/lib)
-    target_link_libraries(test_hash_to_curve secp256k1 mbedcrypto m)
+    set(TEST_SOURCES cashu/protocol.c cashu/utils.c
+    )
+    set(TEST_INCLUDES deps/secp256k1/include /opt/homebrew/include)
+    set(TEST_LIBS secp256k1 mbedcrypto m)
+
+    foreach(test hash_to_curve blind)
+        add_executable(test_${test} tests/test_${test}.c ${TEST_SOURCES})
+        target_include_directories(test_${test} PRIVATE ${TEST_INCLUDES})
+        target_link_directories(test_${test} PRIVATE /opt/homebrew/lib)
+        target_link_libraries(test_${test} ${TEST_LIBS})
+    endforeach()
 endif()
 
 if(VITA_BUILD)
