@@ -8,7 +8,6 @@
 #include <qcbor/qcbor_spiffy_decode.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 #define CBOR_BUF_SIZE 16384
 
@@ -80,18 +79,12 @@ static char *dupn(const void *s, size_t len) {
 }
 
 // ===================================================================
-//                      token encoding / decoding
+//                      token_encode
 // ===================================================================
 
-/*
- * There's a nice pattern, in which you don't need to know buffer size.
- * int size = token_encode(token, NULL);
- * char *buf = malloc(size);
- * token_encode(token, buf);
- */
-int token_encode(const token_t *token, char *out) {
+cashu_err_t token_encode(const token_t *token, char **out) {
     uint8_t *cbor_buf = malloc(CBOR_BUF_SIZE);
-    if (!cbor_buf) return -1;
+    if (!cbor_buf) return CASHU_ERR_OOM;
 
     QCBOREncodeContext ctx;
     QCBOREncode_Init(&ctx, (UsefulBuf){ cbor_buf, CBOR_BUF_SIZE });
@@ -139,26 +132,33 @@ int token_encode(const token_t *token, char *out) {
     UsefulBufC result;
     if (QCBOREncode_Finish(&ctx, &result) != QCBOR_SUCCESS) {
         free(cbor_buf);
-        return -1;
+        return CASHU_ERR_CBOR_ENCODE;
     }
 
-    int total = (int)(6 + b64url_encoded_len(result.len) + 1);
-    if (out) {
-        memcpy(out, "cashuB", 6);
-        b64url_encode(result.ptr, result.len, out + 6);
+    size_t total = 6 + b64url_encoded_len(result.len) + 1;
+    *out = malloc(total);
+    if (!*out) {
+        free(cbor_buf);
+        return CASHU_ERR_OOM;
     }
+
+    memcpy(*out, "cashuB", 6);
+    b64url_encode(result.ptr, result.len, *out + 6);
 
     free(cbor_buf);
-    return out ? total - 1 : total;
+    return CASHU_OK;
 }
 
+// ===================================================================
+//                      token_decode
+// ===================================================================
 
-int token_decode(const char *encoded, token_t *out) {
-    if (strncmp(encoded, "cashuB", 6) != 0) return -1;
+cashu_err_t token_decode(const char *encoded, token_t *out) {
+    if (strncmp(encoded, "cashuB", 6) != 0) return CASHU_ERR_INVALID_TOKEN;
 
     size_t cbor_len;
     uint8_t *cbor_buf = b64url_decode(encoded + 6, &cbor_len);
-    if (!cbor_buf) return -1;
+    if (!cbor_buf) return CASHU_ERR_OOM;
 
     QCBORDecodeContext ctx;
     QCBORDecode_Init(&ctx, (UsefulBufC){ cbor_buf, cbor_len }, QCBOR_DECODE_MODE_NORMAL);
@@ -205,8 +205,11 @@ int token_decode(const char *encoded, token_t *out) {
             QCBORDecode_GetUInt64InMapSZ(&ctx, "a", &amount);
             QCBORDecode_GetTextStringInMapSZ(&ctx, "s", &secret_c);
             QCBORDecode_GetByteStringInMapSZ(&ctx, "c", &C_c);
-
-            out->proofs = realloc(out->proofs, (out->proof_count + 1) * sizeof(proof_t));
+            proof_t *tmp = realloc(out->proofs, (out->proof_count + 1) * sizeof(proof_t));
+            if (tmp == NULL) {
+                return CASHU_ERR_OOM;
+            }
+            out->proofs = tmp;
             proof_t *p  = &out->proofs[out->proof_count++];
             p->amount   = amount;
             p->id       = strdup(id_hex);
@@ -223,7 +226,8 @@ int token_decode(const char *encoded, token_t *out) {
     QCBORDecode_ExitArray(&ctx);
     QCBORDecode_ExitMap(&ctx);
 
-    int ret = QCBORDecode_Finish(&ctx) == QCBOR_SUCCESS ? 0 : -1;
+    const cashu_err_t ret = QCBORDecode_Finish(&ctx) == QCBOR_SUCCESS
+                      ? CASHU_OK : CASHU_ERR_CBOR_DECODE;
     free(cbor_buf);
     return ret;
 }

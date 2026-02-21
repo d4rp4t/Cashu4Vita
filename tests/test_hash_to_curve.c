@@ -9,9 +9,8 @@
 #include "../cashu/utils.h"
 #include <secp256k1.h>
 
-#define GREEN "\033[0;32m"
-#define RED   "\033[0;31m"
-#define RESET "\033[0m"
+#include "testing_utils.h"
+
 
 static int run_test(const char *name, const char *msg_hex, const char *expected_hex) {
     uint8_t msg[32];

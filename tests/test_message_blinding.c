@@ -9,9 +9,7 @@
 #include "../cashu/utils.h"
 #include <secp256k1.h>
 
-#define GREEN "\033[0;32m"
-#define RED   "\033[0;31m"
-#define RESET "\033[0m"
+#include "testing_utils.h"
 
 static secp256k1_context *test_ctx;
 

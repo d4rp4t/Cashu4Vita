@@ -5,9 +5,10 @@
 #ifndef ENCODING_H
 #define ENCODING_H
 
+#include "errors.h"
 #include "models.h"
 
-int token_encode(const token_t *token, char *out);
-int token_decode(const char *encoded, token_t *out);
+cashu_err_t token_encode(const token_t *token, char **out);
+cashu_err_t token_decode(const char *encoded, token_t *out);
 
 #endif //ENCODING_H
