@@ -24,6 +24,8 @@ typedef enum {
     CASHU_ERR_HTTP,              // SceHttp call failed
     CASHU_ERR_HTTP_STATUS,       // server returned non-2xx
 
+    CASHU_ERR_IO,                // file read/write failed
+
     CASHU_ERR_PROTOCOL,          // mint returned protocol exception
 } cashu_err_t;
 

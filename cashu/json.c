@@ -30,7 +30,6 @@ static cJSON *proof_to_cjson(const proof_t *p) {
     return obj;
 }
 
-// Renderuje i zwalnia root — zwraca malloc'd string (caller free())
 static char *render(cJSON *root) {
     char *out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -241,10 +240,12 @@ cashu_err_t json_parse_keysets(const char *json, keyset_t **out, size_t *count) 
         cJSON *active = cJSON_GetObjectItemCaseSensitive(ks, "active");
 
         (*out)[i].id        = cJSON_IsString(id)  ? strdup(id->valuestring)   : NULL;
-        (*out)[i].unit      = cJSON_IsString(unit) ? strdup(unit->valuestring) : NULL;
-        (*out)[i].active    = cJSON_IsBool(active) ? cJSON_IsTrue(active)      : 1;
-        (*out)[i].keys      = NULL;
-        (*out)[i].key_count = 0;
+        cJSON *fee  = cJSON_GetObjectItemCaseSensitive(ks, "input_fee_ppk");
+        (*out)[i].unit          = cJSON_IsString(unit) ? strdup(unit->valuestring) : NULL;
+        (*out)[i].active        = cJSON_IsBool(active) ? cJSON_IsTrue(active)      : 1;
+        (*out)[i].input_fee_ppk = cJSON_IsNumber(fee)  ? (uint32_t)fee->valuedouble : 0;
+        (*out)[i].keys          = NULL;
+        (*out)[i].key_count     = 0;
         i++;
     }
 

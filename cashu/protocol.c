@@ -21,6 +21,8 @@ void crypto_free(void) {
     ctx = NULL;
 }
 
+secp256k1_context *crypto_ctx(void) { return ctx; }
+
 static int get_msg_hash(const uint8_t *msg, size_t msg_len, uint8_t *hash) {
     int ret;
     mbedtls_sha256_context sha;

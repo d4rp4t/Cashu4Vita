@@ -12,7 +12,7 @@ cmake -B $BUILD_DIR \
     -DSECP256K1_BUILD_BENCHMARK=OFF \
     -S .
 
-cmake --build $BUILD_DIR --target test_hash_to_curve test_message_blinding test_serialization test_json
+cmake --build $BUILD_DIR --target test_hash_to_curve test_message_blinding test_serialization test_json test_storage test_network test_wallet
 
 echo "== hash_to_curve =="
 $BUILD_DIR/test_hash_to_curve
@@ -25,3 +25,9 @@ $BUILD_DIR/test_serialization
 
 echo "== json_encode_decode =="
 $BUILD_DIR/test_json
+
+echo "==== storage ===="
+$BUILD_DIR/test_storage
+
+echo "==== network ===="
+$BUILD_DIR/test_network

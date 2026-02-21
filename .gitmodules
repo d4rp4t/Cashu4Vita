@@ -7,3 +7,6 @@
 [submodule "deps/qcbor"]
 	path = deps/qcbor
 	url = https://github.com/laurencelundblade/QCBOR
+[submodule "deps/bc-ur"]
+	path = deps/bc-ur
+	url = https://github.com/BlockchainCommons/bc-ur.git

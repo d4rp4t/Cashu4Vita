@@ -10,6 +10,7 @@
 
 void crypto_init(void);
 void crypto_free(void);
+secp256k1_context *crypto_ctx(void);
 
 cashu_err_t hash_to_curve(const uint8_t *x, size_t x_len, secp256k1_pubkey *out);
 cashu_err_t hex_to_curve(const char *hex, size_t hex_len, secp256k1_pubkey *out);

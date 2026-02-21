@@ -45,6 +45,7 @@ typedef struct {
     char *id;
     char *unit;
     int active;
+    uint32_t input_fee_ppk;
     keyset_key_t *keys;
     size_t key_count;
 } keyset_t;
