@@ -31,3 +31,6 @@ $BUILD_DIR/test_storage
 
 echo "==== network ===="
 $BUILD_DIR/test_network
+
+echo "==== wallet ===="
+$BUILD_DIR/test_wallet

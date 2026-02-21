@@ -27,6 +27,8 @@ typedef enum {
     CASHU_ERR_IO,                // file read/write failed
 
     CASHU_ERR_PROTOCOL,          // mint returned protocol exception
+
+    CASHU_ERR_INSUFFICIENT_FUNDS, // wallet balance < requested amount
 } cashu_err_t;
 
 #endif //ERRORS_H
