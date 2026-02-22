@@ -300,7 +300,7 @@ cashu_err_t wallet_list_mints(mint_info_t **out, size_t *count) {
     cashu_err_t err = storage_list_mints(&urls, &n);
     if (err != CASHU_OK) return err;
 
-    /* check if active mint is already represented in storage */
+    // check if active mint is already in storage
     int found = 0;
     for (size_t i = 0; i < n && !found; i++)
         if (strcmp(urls[i], s_mint_url) == 0) found = 1;
@@ -313,23 +313,24 @@ cashu_err_t wallet_list_mints(mint_info_t **out, size_t *count) {
         return CASHU_ERR_OOM;
     }
 
-    /* active mint always at index 0 */
-    result[0].url     = strdup(s_mint_url);
-    result[0].balance = wallet_balance_for(s_mint_url);
-    if (!result[0].url) {
-        for (size_t i = 0; i < n; i++) free(urls[i]);
-        free(urls); free(result);
-        return CASHU_ERR_OOM;
-    }
-
-    size_t j = 1;
+    size_t j = 0;
     for (size_t i = 0; i < n; i++) {
-        if (strcmp(urls[i], s_mint_url) == 0) { free(urls[i]); continue; }
         result[j].url     = urls[i]; /* transfer ownership */
         result[j].balance = wallet_balance_for(urls[i]);
         j++;
     }
     free(urls);
+
+    if (!found) {
+        result[j].url     = strdup(s_mint_url);
+        result[j].balance = wallet_balance_for(s_mint_url);
+        if (!result[j].url) {
+            for (size_t i = 0; i < j; i++) free(result[i].url);
+            free(result);
+            return CASHU_ERR_OOM;
+        }
+        j++;
+    }
 
     *out   = result;
     *count = j;
@@ -760,6 +761,12 @@ cashu_err_t wallet_receive(const char *token) {
         err = do_unblind_all(out_amounts, out_n, sigs, mat, ks, new_proofs, &built);
         for (size_t i = 0; i < built && err == CASHU_OK; i++)
             err = storage_save_proof(&new_proofs[i], tok.mint_url);
+
+        // auto-switch active mint so the received funds are immediately visible
+        if (err == CASHU_OK && strcmp(tok.mint_url, s_mint_url) != 0) {
+            char *new_url = strdup(tok.mint_url);
+            if (new_url) { free(s_mint_url); s_mint_url = new_url; }
+        }
 
         for (size_t i = 0; i < built; i++) { free(new_proofs[i].id); free(new_proofs[i].secret); }
         free(new_proofs);
