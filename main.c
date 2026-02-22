@@ -178,6 +178,7 @@ static char         s_bolt11[512];
 static melt_quote_t s_melt_q;
 static cashu_err_t  s_melt_err;
 static int          s_exec_melt;
+static int          s_exec_melt_quote; /* fetch melt quote after bolt11 QR scan */
 
 // mint
 static uint64_t     s_mint_amount;
@@ -523,6 +524,21 @@ int main(void) {
                 s_recv_token = qr_reader_result();
                 qr_reader_term();
                 s_exec_receive = 1;
+            } else if (rs == QR_READER_BOLT11) {
+                char *inv = qr_reader_result();
+                qr_reader_term();
+                vita2d_free_texture(s_cam_tex); s_cam_tex = NULL;
+                if (inv && strlen(inv) < sizeof(s_bolt11)) {
+                    strcpy(s_bolt11, inv);
+                    free(inv);
+                    melt_reset();
+                    s_screen          = SCR_MELT_PAYING; /* show while fetching quote */
+                    s_exec_melt_quote = 1;
+                } else {
+                    free(inv);
+                    s_recv_qr_ok = 0;
+                    s_screen     = SCR_RECEIVE_RESULT;
+                }
             } else if (rs == QR_READER_ERROR) {
                 s_recv_qr_ok = 0;
                 qr_reader_term();
@@ -811,6 +827,17 @@ int main(void) {
         // ================================================================
         // these below are blocking - make sure that ui is already drawn
         // ================================================================
+
+        if (s_exec_melt_quote) {
+            s_exec_melt_quote = 0;
+            cashu_err_t qe = wallet_melt_quote(s_bolt11, &s_melt_q);
+            if (qe == CASHU_OK) {
+                s_screen = SCR_MELT_QUOTE;
+            } else {
+                snprintf(s_errmsg, sizeof(s_errmsg), "Quote failed (err %d)", (int)qe);
+                go_home();
+            }
+        }
 
         if (s_exec_melt) {
             s_exec_melt = 0;

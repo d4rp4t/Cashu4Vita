@@ -179,6 +179,16 @@ static cashu_err_t build_outputs(const uint64_t *amounts, size_t n,
 }
 
 
+// number of blank outputs to send for change on a melt request.
+// = ceil(log2(fee_reserve)), minimum 1 if fee_reserve > 0.
+static size_t blank_output_count(uint64_t fee_reserve) {
+    if (fee_reserve == 0) return 0;
+    size_t n = 0;
+    uint64_t v = 1;
+    while (v < fee_reserve) { v <<= 1; n++; }
+    return n > 0 ? n : 1;
+}
+
 // unblind sigs[0..n-1] into proofs[0..n-1].
 // *built = number successfully constructed; proofs[0..*built] have strdup'd id/secret.
 static cashu_err_t do_unblind_all(const uint64_t *amounts, size_t n,
@@ -219,6 +229,50 @@ static cashu_err_t do_unblind_all(const uint64_t *amounts, size_t n,
     return CASHU_OK;
 }
 
+
+// unblind change sigs into proofs.
+// sigs[i].amount drives key lookup (not a pre-known amount array).
+// mat[i] holds the blinding state for the i-th blank output we sent.
+// slots where sigs[i].amount == 0 are skipped.
+static cashu_err_t do_unblind_change(const blind_signature_t *sigs, size_t sig_n,
+                                      const out_mat_t *mat, size_t mat_n,
+                                      const keyset_t *ks,
+                                      proof_t *proofs, size_t *built) {
+    *built = 0;
+    size_t lim = sig_n < mat_n ? sig_n : mat_n;
+    for (size_t i = 0; i < lim; i++) {
+        if (sigs[i].amount == 0) continue;
+
+        const keyset_key_t *mint_key = find_key(ks, sigs[i].amount);
+        if (!mint_key) return CASHU_ERR_PROTOCOL;
+
+        uint8_t A_bytes[33];
+        hex_decode(mint_key->pubkey, A_bytes, 33);
+        secp256k1_pubkey A;
+        if (!secp256k1_ec_pubkey_parse(crypto_ctx(), &A, A_bytes, 33))
+            return CASHU_ERR_INVALID_POINT;
+
+        uint8_t C__bytes[33];
+        hex_decode(sigs[i].C_, C__bytes, 33);
+        secp256k1_pubkey C_;
+        if (!secp256k1_ec_pubkey_parse(crypto_ctx(), &C_, C__bytes, 33))
+            return CASHU_ERR_INVALID_POINT;
+
+        secp256k1_pubkey C;
+        cashu_err_t err = unblind(&C_, mat[i].r, &A, &C);
+        if (err != CASHU_OK) return err;
+
+        size_t C_len = 33;
+        secp256k1_ec_pubkey_serialize(crypto_ctx(), proofs[*built].C, &C_len, &C,
+                                      SECP256K1_EC_COMPRESSED);
+        proofs[*built].amount = sigs[i].amount;
+        proofs[*built].id     = strdup(ks->id);
+        proofs[*built].secret = strdup(mat[i].secret_hex);
+        if (!proofs[*built].id || !proofs[*built].secret) return CASHU_ERR_OOM;
+        (*built)++;
+    }
+    return CASHU_OK;
+}
 
 uint64_t wallet_balance(void) {
     return storage_total_balance();
@@ -349,31 +403,200 @@ cashu_err_t wallet_melt_quote(const char *bolt11, melt_quote_t *out) {
 }
 
 cashu_err_t wallet_melt(const melt_quote_t *melt_q) {
-    uint64_t target = melt_q->amount + melt_q->fee_reserve;
+    uint64_t base_target = melt_q->amount + melt_q->fee_reserve;
 
     proof_t *pool = NULL; size_t pool_n = 0;
     cashu_err_t err = storage_get_by_mint(s_mint_url, &pool, &pool_n);
     if (err != CASHU_OK) return err;
 
-    if (proof_array_sum(pool, pool_n) < target) {
+    if (proof_array_sum(pool, pool_n) < base_target) {
         proof_array_free(pool, pool_n);
         return CASHU_ERR_INSUFFICIENT_FUNDS;
     }
 
-    proof_t *inputs = NULL; size_t inp_n = 0;
-    err = select_proofs(pool, pool_n, target, &inputs, &inp_n);
-    proof_array_free(pool, pool_n);
-    if (err != CASHU_OK) return err;
+    // mint charges keyset fee on melt proofs
+    // in addition to the lightning fee_reserve. two-pass selection to find
+    // eff_target = base_target + cashu_fee, same pattern as wallet_send.
+    keyset_t *fee_ks = NULL; size_t fee_count = 0;
+    err = cashu_get_keysets(s_mint_url, &fee_ks, &fee_count);
+    if (err != CASHU_OK) { proof_array_free(pool, pool_n); return err; }
 
-    melt_quote_t result;
-    err = cashu_melt(s_mint_url, melt_q->quote, inputs, inp_n, &result);
-    if (err == CASHU_OK) {
-        if (strcmp(result.state, "PAID") == 0)
-            storage_remove_proofs(inputs, inp_n);
-        melt_quote_free(&result);
+    proof_t *inputs = NULL; size_t inp_n = 0;
+    err = select_proofs(pool, pool_n, base_target, &inputs, &inp_n);
+    if (err != CASHU_OK) goto done_pool;
+
+    {
+        uint64_t cashu_fee  = compute_fee(inputs, inp_n, fee_ks, fee_count);
+        uint64_t eff_target = base_target + cashu_fee;
+
+        if (proof_array_sum(inputs, inp_n) < eff_target) {
+            proof_array_free(inputs, inp_n); inputs = NULL; inp_n = 0;
+            err = select_proofs(pool, pool_n, eff_target, &inputs, &inp_n);
+            if (err != CASHU_OK) goto done_pool;
+            cashu_fee  = compute_fee(inputs, inp_n, fee_ks, fee_count);
+            eff_target = base_target + cashu_fee;
+            if (proof_array_sum(inputs, inp_n) < eff_target) {
+                err = CASHU_ERR_INSUFFICIENT_FUNDS;
+                goto done_inputs;
+            }
+        }
+        proof_array_free(pool, pool_n); pool = NULL;
+
+        uint64_t inp_sum = proof_array_sum(inputs, inp_n);
+
+        // keys needed for swap (overshoot) and/or blank outputs
+        keyset_t *keysets = NULL; size_t ks_count = 0;
+        out_mat_t         *mat  = NULL;
+        blinded_message_t *msgs = NULL;
+        size_t             out_n = 0;
+
+        if (inp_sum > eff_target || melt_q->fee_reserve > 0) {
+            err = cashu_get_keys(s_mint_url, &keysets, &ks_count);
+            if (err != CASHU_OK) goto done_melt;
+        }
+        keyset_t *ks = keysets ? find_ks_by_unit(keysets, ks_count, s_unit) : NULL;
+        if ((inp_sum > eff_target || melt_q->fee_reserve > 0) && !ks) {
+            err = CASHU_ERR_PROTOCOL; goto done_melt;
+        }
+
+        // ===================================================================
+        // pre-melt swap when inputs overshoot eff_target.
+        //
+        // mint only returns (fee_reserve - actual_routing_fee) as change
+        // any (inp_sum - eff_target) excess is lost otherwise
+        //
+        // swap splits inputs into:
+        //   [0 .. sw_eff_n-1] --> exact melt proofs (sum = sw_t)
+        //   [sw_eff_n .. sw_n-1] --> change kept in wallet
+        //
+        // all swap proofs are stored before the melt so melt proofs are
+        // recoverable from storage if the app crashes before melt completes.
+        // ===================================================================
+        if (inp_sum > eff_target && ks) {
+            // compute post_swap_eff_target (sw_t): smallest T such that
+            // decompose(T) proofs cover base_target + their own cashu fee
+            // fixed-point: T = base_target + fee(decompose(T)), 2-3 iterations.
+            uint64_t sw_t = eff_target;
+            uint32_t ppk  = find_fee_ppk(ks->id, fee_ks, fee_count);
+            for (int iter = 0; iter < 8; iter++) {
+                uint64_t dummy[32];
+                size_t   n    = decompose(sw_t, dummy);
+                uint64_t fee  = ((uint64_t)n * ppk + 999) / 1000;
+                uint64_t need = base_target + fee;
+                if (need <= sw_t) break;
+                sw_t = need;
+            }
+
+            uint64_t swap_fee = compute_fee(inputs, inp_n, fee_ks, fee_count);
+
+            if (inp_sum > sw_t + swap_fee) {
+                uint64_t keep = inp_sum - sw_t - swap_fee;
+
+                uint64_t sw_amounts[64];
+                size_t sw_n    = decompose(sw_t, sw_amounts);
+                size_t sw_eff_n = sw_n;  // [0..sw_eff_n-1] = melt proofs
+                if (keep > 0) sw_n += decompose(keep, sw_amounts + sw_eff_n);
+
+                out_mat_t         *sw_mat  = malloc(sw_n * sizeof(out_mat_t));
+                blinded_message_t *sw_msgs = malloc(sw_n * sizeof(blinded_message_t));
+                proof_t           *sw_pfs  = malloc(sw_n * sizeof(proof_t));
+                if (!sw_mat || !sw_msgs || !sw_pfs) {
+                    free(sw_mat); free(sw_msgs); free(sw_pfs);
+                    err = CASHU_ERR_OOM; goto done_melt;
+                }
+
+                err = build_outputs(sw_amounts, sw_n, ks, sw_mat, sw_msgs);
+                if (err == CASHU_OK) {
+                    blind_signature_t *sw_sigs = NULL; size_t sw_sig_n = 0;
+                    err = cashu_swap(s_mint_url, inputs, inp_n, sw_msgs, sw_n,
+                                     &sw_sigs, &sw_sig_n);
+                    if (err == CASHU_OK) {
+                        if (sw_sig_n != sw_n) { err = CASHU_ERR_PROTOCOL; }
+                        else {
+                            size_t built = 0;
+                            err = do_unblind_all(sw_amounts, sw_n, sw_sigs, sw_mat,
+                                                 ks, sw_pfs, &built);
+                            if (err == CASHU_OK)
+                                err = storage_swap(inputs, inp_n, sw_pfs, sw_n,
+                                                   s_mint_url);
+                            if (err == CASHU_OK) {
+                                proof_array_free(inputs, inp_n);
+                                for (size_t i = sw_eff_n; i < built; i++) {
+                                    free(sw_pfs[i].id);     sw_pfs[i].id     = NULL;
+                                    free(sw_pfs[i].secret); sw_pfs[i].secret = NULL;
+                                }
+                                inputs  = sw_pfs;  sw_pfs = NULL;
+                                inp_n   = sw_eff_n;
+                                inp_sum = sw_t;
+                            } else {
+                                for (size_t i = 0; i < built; i++) {
+                                    free(sw_pfs[i].id); free(sw_pfs[i].secret);
+                                }
+                            }
+                        }
+                        for (size_t i = 0; i < sw_sig_n; i++) {
+                            free(sw_sigs[i].id); free(sw_sigs[i].C_);
+                        }
+                        free(sw_sigs);
+                    }
+                }
+                free(sw_pfs); free(sw_mat); free(sw_msgs);
+                if (err != CASHU_OK) goto done_melt;
+            }
+            // else: not worth swapping (keep = inp_sum - sw_t - swap_fee ≤ 0)
+        }
+
+        // blank outputs so the mint can return unused fee_reserve as change
+        out_n = blank_output_count(melt_q->fee_reserve);
+        if (out_n > 0 && ks) {
+            uint64_t *zeros = calloc(out_n, sizeof(uint64_t));
+            mat  = malloc(out_n * sizeof(out_mat_t));
+            msgs = malloc(out_n * sizeof(blinded_message_t));
+            if (!zeros || !mat || !msgs) { free(zeros); err = CASHU_ERR_OOM; goto done_melt; }
+            err = build_outputs(zeros, out_n, ks, mat, msgs);
+            free(zeros);
+            if (err != CASHU_OK) goto done_melt;
+        }
+
+        {
+            melt_quote_t result = {0};
+            err = cashu_melt(s_mint_url, melt_q->quote, inputs, inp_n,
+                             msgs, out_n, &result);
+            if (err == CASHU_OK) {
+                if (strcmp(result.state, "PAID") == 0) {
+                    storage_remove_proofs(inputs, inp_n);
+                    if (result.change_count > 0 && mat && ks) {
+                        proof_t *cp = malloc(result.change_count * sizeof(proof_t));
+                        if (cp) {
+                            size_t built = 0;
+                            if (do_unblind_change(result.change, result.change_count,
+                                                  mat, out_n, ks, cp, &built) == CASHU_OK) {
+                                for (size_t i = 0; i < built; i++)
+                                    storage_save_proof(&cp[i], s_mint_url);
+                            }
+                            for (size_t i = 0; i < built; i++) {
+                                free(cp[i].id); free(cp[i].secret);
+                            }
+                            free(cp);
+                        }
+                    }
+                }
+                melt_quote_free(&result);
+            }
+        }
+
+done_melt:
+        for (size_t i = 0; i < ks_count; i++) keyset_free(&keysets[i]);
+        free(keysets);
+        free(mat); free(msgs);
     }
 
+done_inputs:
     proof_array_free(inputs, inp_n);
+done_pool:
+    proof_array_free(pool, pool_n);
+    for (size_t i = 0; i < fee_count; i++) keyset_free(&fee_ks[i]);
+    free(fee_ks);
     return err;
 }
 

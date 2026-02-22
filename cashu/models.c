@@ -39,4 +39,9 @@ void melt_quote_free(melt_quote_t *q) {
     free(q->quote);
     free(q->state);
     free(q->payment_preimage);
+    for (size_t i = 0; i < q->change_count; i++) {
+        free(q->change[i].id);
+        free(q->change[i].C_);
+    }
+    free(q->change);
 }

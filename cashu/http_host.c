@@ -211,10 +211,11 @@ cashu_err_t cashu_melt_quote_state(const char *mint_url, const char *quote_id,
 
 cashu_err_t cashu_melt(const char *mint_url, const char *quote,
                        const proof_t *inputs, size_t count,
+                       const blinded_message_t *outputs, size_t out_n,
                        melt_quote_t *out) {
     char *url = make_url(mint_url, "melt/bolt11");
     if (!url) return CASHU_ERR_OOM;
-    char *req_body = json_melt_request(quote, inputs, count);
+    char *req_body = json_melt_request(quote, inputs, count, outputs, out_n);
     if (!req_body) { free(url); return CASHU_ERR_OOM; }
     char *resp = NULL;
     cashu_err_t err = do_request(M_POST, url, req_body, &resp);

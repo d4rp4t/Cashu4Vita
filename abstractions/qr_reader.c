@@ -9,6 +9,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 // =============================================================================
 //                                  camera config
 // =============================================================================
@@ -100,22 +101,37 @@ static int cam_read(void) {
 //                           qr payload handling
 // =============================================================================
 
+static int has_prefix(const char *s, const char *prefix) {
+    while (*prefix)
+        if (tolower((unsigned char)*s++) != (unsigned char)*prefix++) return 0;
+    return 1;
+}
+
 static void process_payload(const uint8_t *data, size_t len) {
-    if (s_state == QR_READER_COMPLETE) return;
+    if (s_state == QR_READER_COMPLETE || s_state == QR_READER_BOLT11) return;
 
     char *str = malloc(len + 1);
     if (!str) return;
     memcpy(str, data, len);
     str[len] = '\0';
 
-    if (strncmp(str, "cashu", 5) == 0) {
+    /* strip known URI scheme prefixes before classifying */
+    const char *p = str;
+    if (strncmp(p, "cashu:", 6) == 0)        p += 6;  /* cashu:cashuB... */
+    else if (has_prefix(p, "lightning:")) p += 10; /* lightning:lnbc... */
+
+    if (strncmp(p, "cashu", 5) == 0) {
+        /* cashu token — strdup from p to drop any leading URI scheme */
+        char *tok = strdup(p);
+        free(str);
+        if (!tok) return;
         free(s_result);
-        s_result = str;
+        s_result = tok;
         s_state  = QR_READER_COMPLETE;
 
-    } else if (strncmp(str, "ur:", 3) == 0) {
-        // bc-ur fountain part
-        bcur_decoder_receive_part(s_dec, str);
+    } else if (strncmp(p, "ur:", 3) == 0) {
+        /* bc-ur fountain part */
+        bcur_decoder_receive_part(s_dec, p);
         free(str);
 
         if (bcur_decoder_is_complete(s_dec)) {
@@ -123,7 +139,6 @@ static void process_payload(const uint8_t *data, size_t len) {
                 size_t rlen = 0;
                 uint8_t *raw = bcur_decoder_result(s_dec, &rlen);
                 if (raw && rlen > 0) {
-                    // raw bytes are the ASCII cashuB string — add null terminator
                     char *tok = realloc(raw, rlen + 1);
                     if (tok) {
                         tok[rlen] = '\0';
@@ -142,8 +157,20 @@ static void process_payload(const uint8_t *data, size_t len) {
                 s_state = QR_READER_ERROR;
             }
         }
+
+    } else if (has_prefix(p, "ln")) {
+        /* bolt11 — lowercase in-place then strdup */
+        for (size_t i = 0; p[i]; i++)
+            ((char *)p)[i] = (char)tolower((unsigned char)p[i]);
+        char *inv = strdup(p);
+        free(str);
+        if (!inv) return;
+        free(s_result);
+        s_result = inv;
+        s_state  = QR_READER_BOLT11;
+
     } else {
-        free(str); // unrecognized — ignore
+        free(str); /* unrecognized */
     }
 }
 
@@ -211,7 +238,7 @@ double qr_reader_progress(void) {
 }
 
 char *qr_reader_result(void) {
-    if (s_state != QR_READER_COMPLETE) return NULL;
+    if (s_state != QR_READER_COMPLETE && s_state != QR_READER_BOLT11) return NULL;
     char *r  = s_result;
     s_result = NULL;
     return r;

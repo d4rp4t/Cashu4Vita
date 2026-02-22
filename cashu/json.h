@@ -13,7 +13,8 @@ char *json_mint_quote_request(uint64_t amount, const char *unit);
 char *json_mint_request(const char *quote, const blinded_message_t *outputs, size_t count);
 
 char *json_melt_quote_request(const char *bolt11, const char *unit);
-char *json_melt_request(const char *quote, const proof_t *inputs, size_t count);
+char *json_melt_request(const char *quote, const proof_t *inputs, size_t count,
+                        const blinded_message_t *outputs, size_t out_n);
 
 char *json_swap_request(const proof_t *inputs, size_t inp_n,
                         const blinded_message_t *outputs, size_t out_n);

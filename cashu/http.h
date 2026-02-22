@@ -45,6 +45,7 @@ cashu_err_t cashu_melt_quote_state(const char *mint_url, const char *quote_id,
 // POST /v1/melt/bolt11
 cashu_err_t cashu_melt(const char *mint_url, const char *quote,
                        const proof_t *inputs, size_t count,
+                       const blinded_message_t *outputs, size_t out_n,
                        melt_quote_t *out);
 
 // POST /v1/swap

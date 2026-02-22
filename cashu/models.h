@@ -63,7 +63,9 @@ typedef struct {
     uint64_t amount;
     uint64_t fee_reserve;
     char *state;
-    char *payment_preimage; // NULL if not set
+    char *payment_preimage;   // NULL if not set
+    blind_signature_t *change; // change sigs; NULL if none
+    size_t change_count;
 } melt_quote_t;
 
 void proof_free(proof_t *p);

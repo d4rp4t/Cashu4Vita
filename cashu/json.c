@@ -64,13 +64,20 @@ char *json_melt_quote_request(const char *bolt11, const char *unit) {
     return render(root);
 }
 
-char *json_melt_request(const char *quote, const proof_t *inputs, size_t count) {
+char *json_melt_request(const char *quote, const proof_t *inputs, size_t count,
+                        const blinded_message_t *outputs, size_t out_n) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "quote", quote);
     cJSON *arr = cJSON_CreateArray();
     for (size_t i = 0; i < count; i++)
         cJSON_AddItemToArray(arr, proof_to_cjson(&inputs[i]));
     cJSON_AddItemToObject(root, "inputs", arr);
+    if (outputs && out_n > 0) {
+        cJSON *out_arr = cJSON_CreateArray();
+        for (size_t i = 0; i < out_n; i++)
+            cJSON_AddItemToArray(out_arr, blinded_message_to_cjson(&outputs[i]));
+        cJSON_AddItemToObject(root, "outputs", out_arr);
+    }
     return render(root);
 }
 
@@ -137,6 +144,33 @@ cashu_err_t json_parse_melt_quote(const char *json, melt_quote_t *out) {
     out->state            = strdup(state->valuestring);
     out->payment_preimage = (cJSON_IsString(preimage) && preimage->valuestring[0])
                             ? strdup(preimage->valuestring) : NULL;
+    out->change       = NULL;
+    out->change_count = 0;
+
+    cJSON *change_arr = cJSON_GetObjectItemCaseSensitive(root, "change");
+    if (cJSON_IsArray(change_arr)) {
+        int cn = cJSON_GetArraySize(change_arr);
+        if (cn > 0) {
+            out->change = malloc((size_t)cn * sizeof(blind_signature_t));
+            if (!out->change) {
+                free(out->quote); free(out->state); free(out->payment_preimage);
+                cJSON_Delete(root);
+                return CASHU_ERR_OOM;
+            }
+            int ci = 0;
+            cJSON *item;
+            cJSON_ArrayForEach(item, change_arr) {
+                cJSON *amt = cJSON_GetObjectItemCaseSensitive(item, "amount");
+                cJSON *id  = cJSON_GetObjectItemCaseSensitive(item, "id");
+                cJSON *C_  = cJSON_GetObjectItemCaseSensitive(item, "C_");
+                out->change[ci].amount = cJSON_IsNumber(amt) ? (uint64_t)amt->valuedouble : 0;
+                out->change[ci].id     = cJSON_IsString(id) ? strdup(id->valuestring) : NULL;
+                out->change[ci].C_     = cJSON_IsString(C_) ? strdup(C_->valuestring) : NULL;
+                ci++;
+            }
+            out->change_count = (size_t)cn;
+        }
+    }
 
     cJSON_Delete(root);
     return CASHU_OK;
