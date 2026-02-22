@@ -10,7 +10,10 @@
 
 
 cashu_err_t cashu_http_init(void);
-void        cashu_http_term(void);
+void cashu_http_term(void);
+
+// last raw return code set on every CASHU_ERR_HTTP
+int cashu_http_last_sce_err(void);
 
 // GET /v1/keys
 cashu_err_t cashu_get_keys(const char *mint_url, keyset_t **out, size_t *count);
