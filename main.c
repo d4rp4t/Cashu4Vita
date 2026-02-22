@@ -522,7 +522,6 @@ int main(void) {
 
             if (rs == QR_READER_COMPLETE) {
                 s_recv_token = qr_reader_result();
-                qr_reader_term();
                 s_exec_receive = 1;
             } else if (rs == QR_READER_BOLT11) {
                 char *inv = qr_reader_result();
@@ -869,6 +868,8 @@ int main(void) {
 
         if (s_exec_receive) {
             s_exec_receive = 0;
+            qr_reader_term();
+            vita2d_free_texture(s_cam_tex); s_cam_tex = NULL;
             if (s_recv_token) {
                 s_recv_err = wallet_receive(s_recv_token);
                 free(s_recv_token);
