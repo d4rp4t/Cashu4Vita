@@ -9,10 +9,10 @@ _/ ___\\__  \  /  ___/  |  \|  |  \/   |  |\  \/ /  \   __\__  \
 
 ```
 
-PS Vita Cashu Wallet.
+PS Vita Cashu wallet
 This project is deeply unserious, probably buggy and was created as a weekend hack.
 
-I also wanted to show that cashu is superior for micropayments. It can literally run on 2012 
+I also wanted to show that Cashu is superior for micropayments. It can literally run on a 2011
 handheld game console. 
 
 It runs with [testnut](https://testnut.cashu.space/v1/info) mint as a default. 
@@ -35,9 +35,10 @@ To build
 ./build.sh
 ```
 This will run VitaSDK in a docker container, and build it. 
-Then you can copy Cashu4Vita.vpk to your vita, and play around with cashu on your dusty handheld.
+Then you can copy Cashu4Vita.vpk to your vita, and play around with Cashu on your dusty handheld.
 Running this app requires modded console with HENkaku / enso installed.
 
-Not affiliated with Sony or anything like that. 
+Not affiliated with Sony Interactive Entertainment.
+PlayStation and PS Vita are trademarks of Sony.
 
-You couldn't do that with fiat btw.
+You couldn't do shit like that with fiat btw.
