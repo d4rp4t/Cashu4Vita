@@ -8,6 +8,7 @@
 #include "../cashu/encoding.h"
 #include "../cashu/utils.h"
 #include <secp256k1.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -220,11 +221,71 @@ static cashu_err_t do_unblind_all(const uint64_t *amounts, size_t n,
 
 
 uint64_t wallet_balance(void) {
+    return storage_total_balance();
+}
+
+uint64_t wallet_balance_for(const char *mint_url) {
     proof_t *p; size_t n;
-    if (storage_get_by_mint(s_mint_url, &p, &n) != CASHU_OK) return 0;
+    if (storage_get_by_mint(mint_url, &p, &n) != CASHU_OK) return 0;
     uint64_t bal = proof_array_sum(p, n);
     proof_array_free(p, n);
     return bal;
+}
+
+const char *wallet_active_mint(void) { return s_mint_url; }
+
+void wallet_set_active_mint(const char *url) {
+    char *dup = strdup(url);
+    if (!dup) return;
+    free(s_mint_url);
+    s_mint_url = dup;
+}
+
+cashu_err_t wallet_list_mints(mint_info_t **out, size_t *count) {
+    char **urls = NULL; size_t n = 0;
+    cashu_err_t err = storage_list_mints(&urls, &n);
+    if (err != CASHU_OK) return err;
+
+    /* check if active mint is already represented in storage */
+    int found = 0;
+    for (size_t i = 0; i < n && !found; i++)
+        if (strcmp(urls[i], s_mint_url) == 0) found = 1;
+
+    size_t total = n + (found ? 0 : 1);
+    mint_info_t *result = malloc(total * sizeof(mint_info_t));
+    if (!result) {
+        for (size_t i = 0; i < n; i++) free(urls[i]);
+        free(urls);
+        return CASHU_ERR_OOM;
+    }
+
+    /* active mint always at index 0 */
+    result[0].url     = strdup(s_mint_url);
+    result[0].balance = wallet_balance_for(s_mint_url);
+    if (!result[0].url) {
+        for (size_t i = 0; i < n; i++) free(urls[i]);
+        free(urls); free(result);
+        return CASHU_ERR_OOM;
+    }
+
+    size_t j = 1;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(urls[i], s_mint_url) == 0) { free(urls[i]); continue; }
+        result[j].url     = urls[i]; /* transfer ownership */
+        result[j].balance = wallet_balance_for(urls[i]);
+        j++;
+    }
+    free(urls);
+
+    *out   = result;
+    *count = j;
+    return CASHU_OK;
+}
+
+void wallet_mints_free(mint_info_t *mints, size_t count) {
+    if (!mints) return;
+    for (size_t i = 0; i < count; i++) free(mints[i].url);
+    free(mints);
 }
 
 
@@ -427,7 +488,6 @@ done_fee_ks:
 
 
 cashu_err_t wallet_receive(const char *token) {
-    // 1. decode
     token_t tok;
     cashu_err_t err = token_decode(token, &tok);
     if (err != CASHU_OK) return err;
@@ -435,9 +495,8 @@ cashu_err_t wallet_receive(const char *token) {
     uint64_t total = 0;
     for (size_t i = 0; i < tok.proof_count; i++) total += tok.proofs[i].amount;
 
-    // 2. fee for incoming proofs
     keyset_t *fee_ks = NULL; size_t fee_count = 0;
-    err = cashu_get_keysets(s_mint_url, &fee_ks, &fee_count);
+    err = cashu_get_keysets(tok.mint_url, &fee_ks, &fee_count);
     if (err != CASHU_OK) { token_free(&tok); return err; }
 
     uint64_t fee = compute_fee(tok.proofs, tok.proof_count, fee_ks, fee_count);
@@ -447,13 +506,11 @@ cashu_err_t wallet_receive(const char *token) {
     if (fee >= total) { token_free(&tok); return CASHU_ERR_PROTOCOL; }
     uint64_t net = total - fee;
 
-    // 3. decompose net into denominations
     uint64_t out_amounts[32];
     size_t   out_n = decompose(net, out_amounts);
 
-    // 4. keys
     keyset_t *keysets = NULL; size_t ks_count = 0;
-    err = cashu_get_keys(s_mint_url, &keysets, &ks_count);
+    err = cashu_get_keys(tok.mint_url, &keysets, &ks_count);
     if (err != CASHU_OK) { token_free(&tok); return err; }
 
     keyset_t *ks = find_ks_by_unit(keysets, ks_count, s_unit);
@@ -468,7 +525,8 @@ cashu_err_t wallet_receive(const char *token) {
         if (err != CASHU_OK) goto done_out;
 
         blind_signature_t *sigs = NULL; size_t sig_count = 0;
-        err = cashu_swap(s_mint_url, tok.proofs, tok.proof_count, msgs, out_n, &sigs, &sig_count);
+        err = cashu_swap(tok.mint_url, tok.proofs, tok.proof_count,
+                         msgs, out_n, &sigs, &sig_count);
         if (err != CASHU_OK) goto done_out;
         if (sig_count != out_n) { err = CASHU_ERR_PROTOCOL; goto done_sigs; }
 
@@ -478,7 +536,7 @@ cashu_err_t wallet_receive(const char *token) {
         size_t built = 0;
         err = do_unblind_all(out_amounts, out_n, sigs, mat, ks, new_proofs, &built);
         for (size_t i = 0; i < built && err == CASHU_OK; i++)
-            err = storage_save_proof(&new_proofs[i], s_mint_url);
+            err = storage_save_proof(&new_proofs[i], tok.mint_url);
 
         for (size_t i = 0; i < built; i++) { free(new_proofs[i].id); free(new_proofs[i].secret); }
         free(new_proofs);

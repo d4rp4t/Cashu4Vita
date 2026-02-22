@@ -17,4 +17,11 @@ cashu_err_t storage_swap(const proof_t *spent, size_t spent_n,
                          const proof_t *fresh,  size_t fresh_n,
                          const char    *mint_url);
 
+// sum of all stored proof amounts across every mint
+uint64_t storage_total_balance(void);
+
+// returns heap-allocated array of unique mint URLs found in storage
+// caller must free urls[i] and urls
+cashu_err_t storage_list_mints(char ***urls_out, size_t *count_out);
+
 #endif //STORAGE_H

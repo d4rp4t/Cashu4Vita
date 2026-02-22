@@ -21,7 +21,19 @@ void wallet_term(void);
 //                                 balance
 // =============================================================================
 
-uint64_t wallet_balance(void);
+uint64_t wallet_balance(void);          // total across all mints
+uint64_t wallet_balance_for(const char *mint_url); // per-mint balance
+
+// ==============================================================================
+//                                 mint management
+// =============================================================================
+
+const char *wallet_active_mint(void);
+void        wallet_set_active_mint(const char *url); // switches active mint
+
+typedef struct { char *url; uint64_t balance; } mint_info_t;
+cashu_err_t wallet_list_mints(mint_info_t **out, size_t *count);
+void        wallet_mints_free(mint_info_t *mints, size_t count);
 
 // ==============================================================================
 //                                 minting

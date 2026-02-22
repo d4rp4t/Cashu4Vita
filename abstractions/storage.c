@@ -261,6 +261,46 @@ cashu_err_t storage_remove_proofs(const proof_t *proofs, size_t count) {
     return flush();
 }
 
+uint64_t storage_total_balance(void) {
+    uint64_t total = 0;
+    for (size_t i = 0; i < s_count; i++)
+        total += s_proofs[i].proof.amount;
+    return total;
+}
+
+cashu_err_t storage_list_mints(char ***urls_out, size_t *count_out) {
+    // two-pass: count uniques, then collect
+    size_t unique = 0;
+    for (size_t i = 0; i < s_count; i++) {
+        int dup = 0;
+        for (size_t j = 0; j < i && !dup; j++)
+            if (strcmp(s_proofs[j].mint_url, s_proofs[i].mint_url) == 0) dup = 1;
+        if (!dup) unique++;
+    }
+    if (unique == 0) { *urls_out = NULL; *count_out = 0; return CASHU_OK; }
+
+    char **urls = malloc(unique * sizeof(char *));
+    if (!urls) return CASHU_ERR_OOM;
+
+    size_t n = 0;
+    for (size_t i = 0; i < s_count; i++) {
+        int dup = 0;
+        for (size_t j = 0; j < n && !dup; j++)
+            if (strcmp(urls[j], s_proofs[i].mint_url) == 0) dup = 1;
+        if (dup) continue;
+        urls[n] = strdup(s_proofs[i].mint_url);
+        if (!urls[n]) {
+            for (size_t k = 0; k < n; k++) free(urls[k]);
+            free(urls);
+            return CASHU_ERR_OOM;
+        }
+        n++;
+    }
+    *urls_out  = urls;
+    *count_out = n;
+    return CASHU_OK;
+}
+
 cashu_err_t storage_swap(const proof_t *spent, size_t spent_n,
                          const proof_t *fresh,  size_t fresh_n,
                          const char    *mint_url) {

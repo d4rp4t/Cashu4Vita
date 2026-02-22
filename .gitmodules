@@ -10,3 +10,9 @@
 [submodule "deps/bc-ur"]
 	path = deps/bc-ur
 	url = https://github.com/BlockchainCommons/bc-ur.git
+[submodule "deps/qrcodegen"]
+	path = deps/qrcodegen
+	url = https://github.com/nayuki/QR-Code-generator
+[submodule "deps/quirc"]
+	path = deps/quirc
+	url = https://github.com/dlbeer/quirc

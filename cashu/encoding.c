@@ -6,6 +6,7 @@
 #include <qcbor/qcbor_encode.h>
 #include <qcbor/qcbor_decode.h>
 #include <qcbor/qcbor_spiffy_decode.h>
+#include <qcbor/qcbor_common.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -47,10 +48,12 @@ static int b64url_char_val(char c) {
 
 static uint8_t *b64url_decode(const char *in, size_t *out_len) {
     size_t in_len = strlen(in);
+    if (in_len == 0) { *out_len = 0; return NULL; }
     size_t padded = in_len;
     if (padded % 4 == 2) padded += 2;
     else if (padded % 4 == 3) padded += 1;
     *out_len = padded / 4 * 3 - (padded - in_len);
+    if (*out_len == 0) return NULL;
     uint8_t *out = malloc(*out_len);
     if (!out) return NULL;
     size_t i = 0, j = 0;
@@ -59,6 +62,10 @@ static uint8_t *b64url_decode(const char *in, size_t *out_len) {
         int b = i < in_len ? b64url_char_val(in[i++]) : 0;
         int c = i < in_len ? b64url_char_val(in[i++]) : 0;
         int d = i < in_len ? b64url_char_val(in[i++]) : 0;
+        if (a < 0 || b < 0 || c < 0 || d < 0) {
+            free(out);
+            return NULL;
+        }
         uint32_t triple = ((uint32_t)a << 18) | ((uint32_t)b << 12) |
                           ((uint32_t)c <<  6) |  (uint32_t)d;
         if (j < *out_len) out[j++] = (triple >> 16) & 0xFF;
@@ -72,7 +79,8 @@ static uint8_t *b64url_decode(const char *in, size_t *out_len) {
 //                              helpers
 // ===================================================================
 
-static char *dupn(const void *s, size_t len) {
+static char *dupn_safe(const void *s, size_t len) {
+    if (!s) return NULL;
     char *out = malloc(len + 1);
     if (out) { memcpy(out, s, len); out[len] = '\0'; }
     return out;
@@ -167,19 +175,33 @@ cashu_err_t token_decode(const char *encoded, token_t *out) {
 
     UsefulBufC mint_c, unit_c;
     QCBORDecode_GetTextStringInMapSZ(&ctx, "m", &mint_c);
+    if (QCBORDecode_GetAndResetError(&ctx) != QCBOR_SUCCESS) {
+        free(cbor_buf);
+        return CASHU_ERR_CBOR_DECODE;
+    }
     QCBORDecode_GetTextStringInMapSZ(&ctx, "u", &unit_c);
+    if (QCBORDecode_GetAndResetError(&ctx) != QCBOR_SUCCESS) {
+        free(cbor_buf);
+        return CASHU_ERR_CBOR_DECODE;
+    }
 
-    out->mint_url    = dupn(mint_c.ptr, mint_c.len);
-    out->unit        = dupn(unit_c.ptr, unit_c.len);
-    out->proofs      = NULL;
+    out->mint_url = dupn_safe(mint_c.ptr, mint_c.len);
+    out->unit     = dupn_safe(unit_c.ptr, unit_c.len);
+    out->proofs    = NULL;
     out->proof_count = 0;
-    out->memo        = NULL;
+    out->memo      = NULL;
+    if (!out->mint_url || !out->unit) {
+        free(out->mint_url);
+        free(out->unit);
+        free(cbor_buf);
+        return CASHU_ERR_OOM;
+    }
 
     {
         UsefulBufC memo_c;
         QCBORDecode_GetTextStringInMapSZ(&ctx, "d", &memo_c);
-        if (QCBORDecode_GetAndResetError(&ctx) == QCBOR_SUCCESS)
-            out->memo = dupn(memo_c.ptr, memo_c.len);
+        if (QCBORDecode_GetAndResetError(&ctx) == QCBOR_SUCCESS && memo_c.ptr)
+            out->memo = dupn_safe(memo_c.ptr, memo_c.len);
     }
 
     QCBORDecode_EnterArrayFromMapSZ(&ctx, "t");
@@ -190,6 +212,20 @@ cashu_err_t token_decode(const char *encoded, token_t *out) {
 
         UsefulBufC id_c;
         QCBORDecode_GetByteStringInMapSZ(&ctx, "i", &id_c);
+        if (QCBORDecode_GetAndResetError(&ctx) != QCBOR_SUCCESS ||
+            !id_c.ptr || id_c.len != 8) {
+            // cleanup: token_free would free proofs, but there may be partial state
+            for (size_t i = 0; i < out->proof_count; i++) {
+                free(out->proofs[i].id);
+                free(out->proofs[i].secret);
+            }
+            free(out->proofs);
+            free(out->mint_url);
+            free(out->unit);
+            free(out->memo);
+            free(cbor_buf);
+            return CASHU_ERR_CBOR_DECODE;
+        }
 
         char id_hex[17];
         hex_encode(id_c.ptr, id_c.len, id_hex);
@@ -205,15 +241,51 @@ cashu_err_t token_decode(const char *encoded, token_t *out) {
             QCBORDecode_GetUInt64InMapSZ(&ctx, "a", &amount);
             QCBORDecode_GetTextStringInMapSZ(&ctx, "s", &secret_c);
             QCBORDecode_GetByteStringInMapSZ(&ctx, "c", &C_c);
+            if (QCBORDecode_GetAndResetError(&ctx) != QCBOR_SUCCESS ||
+                !secret_c.ptr || !C_c.ptr || C_c.len != 33) {
+                for (size_t i = 0; i < out->proof_count; i++) {
+                    free(out->proofs[i].id);
+                    free(out->proofs[i].secret);
+                }
+                free(out->proofs);
+                free(out->mint_url);
+                free(out->unit);
+                free(out->memo);
+                free(cbor_buf);
+                return CASHU_ERR_CBOR_DECODE;
+            }
             proof_t *tmp = realloc(out->proofs, (out->proof_count + 1) * sizeof(proof_t));
             if (tmp == NULL) {
+                for (size_t i = 0; i < out->proof_count; i++) {
+                    free(out->proofs[i].id);
+                    free(out->proofs[i].secret);
+                }
+                free(out->proofs);
+                free(out->mint_url);
+                free(out->unit);
+                free(out->memo);
+                free(cbor_buf);
                 return CASHU_ERR_OOM;
             }
             out->proofs = tmp;
             proof_t *p  = &out->proofs[out->proof_count++];
             p->amount   = amount;
             p->id       = strdup(id_hex);
-            p->secret   = dupn(secret_c.ptr, secret_c.len);
+            p->secret   = dupn_safe(secret_c.ptr, secret_c.len);
+            if (!p->id || !p->secret) {
+                free(p->id);
+                free(p->secret);
+                for (size_t i = 0; i < out->proof_count - 1; i++) {
+                    free(out->proofs[i].id);
+                    free(out->proofs[i].secret);
+                }
+                free(out->proofs);
+                free(out->mint_url);
+                free(out->unit);
+                free(out->memo);
+                free(cbor_buf);
+                return CASHU_ERR_OOM;
+            }
             memcpy(p->C, C_c.ptr, 33);
 
             QCBORDecode_ExitMap(&ctx);
