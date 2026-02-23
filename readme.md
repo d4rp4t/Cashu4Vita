@@ -10,6 +10,7 @@ _/ ___\\__  \  /  ___/  |  \|  |  \/   |  |\  \/ /  \   __\__  \
 ```
 
 PS Vita Cashu wallet
+
 This project is deeply unserious, probably buggy and was created as a weekend hack.
 
 I also wanted to show that Cashu is superior for micropayments. It can literally run on a 2011
