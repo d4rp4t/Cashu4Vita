@@ -7,7 +7,7 @@ if(DEFINED ENV{VITASDK} AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
   set(VITA_BUILD ON)
 endif()
 
-project(VitaCashu C CXX)
+project(Cashu4Vita C CXX)
 
 if(VITA_BUILD)
   include("${VITASDK}/share/vita.cmake" REQUIRED)
@@ -17,7 +17,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(VITA_APP_NAME "VitaCashu")
+set(VITA_APP_NAME "Cashu4Vita")
 set(VITA_TITLEID  "VCSH03338")
 set(VITA_VERSION  "01.00")
 
@@ -205,5 +205,10 @@ if(VITA_BUILD)
   vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
   vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
           VERSION ${VITA_VERSION}
-          NAME ${VITA_APP_NAME})
+          NAME ${VITA_APP_NAME}
+          FILE sce_sys/icon0.png sce_sys/icon0.png
+#          FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
+#          FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
+#          FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
+  )
 endif()

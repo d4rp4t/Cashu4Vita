@@ -45,8 +45,7 @@
 typedef enum {
     SCR_HOME,
 
-    // melt
-    SCR_MELT_INPUT,
+    // melt (no manual input: bolt11 comes from QR scan)
     SCR_MELT_QUOTE,
     SCR_MELT_PAYING,
     SCR_MELT_RESULT,
@@ -144,9 +143,19 @@ static void hline(float y) {
     vita2d_draw_rectangle(0, y, 960, 1, C_LINE);
 }
 
+static void extract_host(const char *url, char *out, size_t max) {
+    const char *p = url;
+    if (strncmp(p, "https://", 8) == 0) p += 8;
+    else if (strncmp(p, "http://", 7) == 0) p += 7;
+    size_t i = 0;
+    while (p[i] && p[i] != '/' && i < max - 1) { out[i] = p[i]; i++; }
+    out[i] = '\0';
+}
+
 static void draw_header(vita2d_pgf *f, const char *label) {
-    vita2d_pgf_draw_text(f,  20, 34, C_WHITE, 1.0f, "VitaCashu");
-    vita2d_pgf_draw_text(f, 590, 34, C_DIM,   0.65f, "testnut.cashu.space");
+    vita2d_pgf_draw_text(f, 20, 34, C_WHITE, 1.0f, "VitaCashu");
+    char host[48]; extract_host(wallet_active_mint(), host, sizeof(host));
+    vita2d_pgf_draw_text(f, 960 - 20 - (int)(strlen(host) * 8), 34, C_DIM, 0.65f, host);
     hline(44);
     if (label)
         vita2d_pgf_draw_text(f, 20, 75, C_GRAY, 0.75f, label);
@@ -155,6 +164,27 @@ static void draw_header(vita2d_pgf *f, const char *label) {
 static void draw_hint(vita2d_pgf *f, const char *hint) {
     hline(460);
     vita2d_pgf_draw_text(f, 20, 530, C_DIM, 0.75f, hint);
+}
+
+static const char *err_str(cashu_err_t e) {
+    switch (e) {
+    case CASHU_OK:                    return "OK";
+    case CASHU_ERR_OOM:               return "Out of memory";
+    case CASHU_ERR_HTTP:              return "Network error";
+    case CASHU_ERR_HTTP_STATUS:       return "Mint returned an error";
+    case CASHU_ERR_JSON_PARSE:
+    case CASHU_ERR_JSON_MISSING:      return "Bad response from mint";
+    case CASHU_ERR_INVALID_TOKEN:     return "Invalid token";
+    case CASHU_ERR_INSUFFICIENT_FUNDS: return "Insufficient funds";
+    case CASHU_ERR_PROTOCOL:          return "Mint rejected request";
+    case CASHU_ERR_IO:                return "Storage error";
+    case CASHU_ERR_CBOR_ENCODE:
+    case CASHU_ERR_CBOR_DECODE:       return "Encoding error";
+    case CASHU_ERR_HASH_TO_CURVE:
+    case CASHU_ERR_INVALID_POINT:
+    case CASHU_ERR_INVALID_SCALAR:    return "Crypto error";
+    default:                          return "Unknown error";
+    }
 }
 
 static void trunc_str(const char *src, char *dst, size_t maxlen) {
@@ -210,6 +240,20 @@ static vita2d_texture *s_cam_tex      = NULL;  // grayscale camera preview textu
 // =============================================================================
 //                                helpers
 // =============================================================================
+
+static void cycle_mint(int dir) { /* dir: +1 next, -1 prev */
+    mint_info_t *mints = NULL; size_t mc = 0;
+    if (wallet_list_mints(&mints, &mc) == CASHU_OK && mc > 1) {
+        const char *cur = wallet_active_mint();
+        int cur_i = 0;
+        for (int i = 0; i < (int)mc; i++)
+            if (strcmp(mints[i].url, cur) == 0) { cur_i = i; break; }
+        int next = ((cur_i + dir) % (int)mc + (int)mc) % (int)mc;
+        wallet_set_active_mint(mints[next].url);
+        s_balance = wallet_balance_for(wallet_active_mint());
+    }
+    wallet_mints_free(mints, mc);
+}
 
 static void go_home(void) {
     s_balance       = wallet_balance_for(wallet_active_mint());
@@ -324,16 +368,7 @@ int main(void) {
                 ime_open("Amount (sat)", 1);
                 s_screen = SCR_MINT_AMOUNT;
             } else if (pressed & SCE_CTRL_CROSS) {
-                ime_open("Bolt11", 0);
-                s_screen = SCR_MELT_INPUT;
-            } else if (pressed & SCE_CTRL_TRIANGLE) {
-                ime_open("Amount (sat)", 1);
-                s_screen = SCR_SEND_AMOUNT;
-            } else if (pressed & SCE_CTRL_CIRCLE) {
-                s_export_sel = 0;
-                load_exports();
-                s_screen = SCR_EXPORTS;
-            } else if (pressed & SCE_CTRL_RTRIGGER) {
+                // scan QR: auto-detects bolt11 (pay) or cashu token (receive)
                 s_recv_qr_ok = 1;
                 if (qr_reader_init() == 0) {
                     s_cam_tex = vita2d_create_empty_texture(320, 240);
@@ -341,42 +376,24 @@ int main(void) {
                 } else {
                     snprintf(s_errmsg, sizeof(s_errmsg), "Camera init failed");
                 }
+            } else if (pressed & SCE_CTRL_TRIANGLE) {
+                ime_open("Amount (sat)", 1);
+                s_screen = SCR_SEND_AMOUNT;
+            } else if (pressed & SCE_CTRL_CIRCLE) {
+                s_export_sel = 0;
+                load_exports();
+                s_screen = SCR_EXPORTS;
             } else if (pressed & SCE_CTRL_LTRIGGER) {
-                mint_info_t *mints = NULL; size_t mc = 0;
-                if (wallet_list_mints(&mints, &mc) == CASHU_OK && mc > 1) {
-                    const char *cur = wallet_active_mint();
-                    size_t cur_i = 0;
-                    for (size_t i = 0; i < mc; i++)
-                        if (strcmp(mints[i].url, cur) == 0) { cur_i = i; break; }
-                    wallet_set_active_mint(mints[(cur_i + 1) % mc].url);
-                    s_balance = wallet_balance_for(wallet_active_mint());
-                }
-                wallet_mints_free(mints, mc);
+                cycle_mint(-1);
+            } else if (pressed & SCE_CTRL_RTRIGGER) {
+                cycle_mint(+1);
             }
             break;
 
         // ---- MELT ----
-        case SCR_MELT_INPUT:
-            if (sceImeDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_FINISHED) {
-                SceImeDialogResult res; memset(&res, 0, sizeof(res));
-                sceImeDialogGetResult(&res); sceImeDialogTerm();
-                if (res.button == SCE_IME_DIALOG_BUTTON_ENTER) {
-                    ime_to_ascii(s_bolt11, sizeof(s_bolt11));
-                    cashu_err_t e = wallet_melt_quote(s_bolt11, &s_melt_q);
-                    if (e == CASHU_OK) {
-                        s_screen = SCR_MELT_QUOTE;
-                    } else {
-                        snprintf(s_errmsg, sizeof(s_errmsg),
-                                 "Quote failed (err %d)", (int)e);
-                        s_screen = SCR_HOME;
-                    }
-                } else { s_screen = SCR_HOME; }
-            }
-            break;
-
         case SCR_MELT_QUOTE:
-            if (pressed & SCE_CTRL_CROSS)    { s_exec_melt = 1; s_screen = SCR_MELT_PAYING; }
-            if (pressed & SCE_CTRL_TRIANGLE) { melt_reset(); s_screen = SCR_HOME; }
+            if (pressed & SCE_CTRL_CROSS)  { s_exec_melt = 1; s_screen = SCR_MELT_PAYING; }
+            if (pressed & SCE_CTRL_CIRCLE) { melt_reset(); s_screen = SCR_HOME; }
             break;
 
         case SCR_MELT_RESULT:
@@ -396,7 +413,7 @@ int main(void) {
                         s_screen = SCR_MINT_INVOICE;
                     } else {
                         snprintf(s_errmsg, sizeof(s_errmsg),
-                                 "Mint quote failed (err %d)", (int)e);
+                                 "Deposit failed: %s", err_str(e));
                         s_screen = SCR_HOME;
                     }
                 } else { s_screen = SCR_HOME; }
@@ -404,8 +421,8 @@ int main(void) {
             break;
 
         case SCR_MINT_INVOICE:
-            if (pressed & SCE_CTRL_CROSS)    { s_exec_mint_poll = 1; }
-            if (pressed & SCE_CTRL_TRIANGLE) { mint_reset(); s_screen = SCR_HOME; }
+            if (pressed & SCE_CTRL_CROSS)  { s_exec_mint_poll = 1; }
+            if (pressed & SCE_CTRL_CIRCLE) { mint_reset(); s_screen = SCR_HOME; }
             break;
 
         case SCR_MINT_RESULT:
@@ -439,7 +456,7 @@ int main(void) {
                     } else {
                         free(token);
                         snprintf(s_errmsg, sizeof(s_errmsg),
-                                 "Send failed (err %d)", (int)e);
+                                 "Send failed: %s", err_str(e));
                         s_screen = SCR_HOME;
                     }
                 } else { s_screen = SCR_HOME; }
@@ -452,7 +469,7 @@ int main(void) {
                 free(s_send_part);
                 s_send_part = bcur_encoder_next_part(s_send_enc);
             }
-            if (pressed & SCE_CTRL_TRIANGLE) { send_reset(); go_home(); }
+            if (pressed & SCE_CTRL_CIRCLE) { send_reset(); go_home(); }
             break;
 
         // ---- EXPORTS ----
@@ -582,36 +599,20 @@ int main(void) {
             }
 
             if (http_init_err != CASHU_OK) {
-                char dbg[64];
-                snprintf(dbg, sizeof(dbg), "http_init err=%d sce=%d",
-                         (int)http_init_err, cashu_http_last_sce_err());
-                vita2d_pgf_draw_text(font, 20, 340, C_RED, 0.75f, dbg);
+                vita2d_pgf_draw_text(font, 20, 340, C_RED, 0.75f,
+                                     "HTTP init failed — no network access");
             }
             if (s_errmsg[0]) {
-                char dbg[160];
-                snprintf(dbg, sizeof(dbg), "%s  (sce=%d)", s_errmsg,
-                         cashu_http_last_sce_err());
-                vita2d_pgf_draw_text(font, 20, 385, C_RED, 0.8f, dbg);
+                vita2d_pgf_draw_text(font, 20, 385, C_RED, 0.8f, s_errmsg);
             }
 
-            draw_hint(font,
-                "L1: switch mint  R1: scan  Sq: mint  X: pay  Tri: send  O: exports");
+            draw_hint(font, "L1/R1: switch mint   \u25a1: mint   X: scan   \u25b3: export token   \u25cb: export history");
             break;
         }
-
-        // ---- MELT INPUT ----
-        case SCR_MELT_INPUT:
-            draw_header(font, "PAY INVOICE");
-            vita2d_pgf_draw_text(font, 20, 175, C_DIM, 0.85f,
-                                 "Enter bolt11 in the keyboard...");
-            break;
 
         // ---- MELT QUOTE ----
         case SCR_MELT_QUOTE: {
             draw_header(font, "CONFIRM PAYMENT");
-            char t[52]; trunc_str(s_bolt11, t, 48);
-            vita2d_pgf_draw_text(font, 20, 140, C_DIM, 0.7f, t);
-            hline(154);
 
             char l1[64], l2[64], l3[64];
             snprintf(l1, sizeof(l1), "Amount:       %llu sat",
@@ -635,7 +636,7 @@ int main(void) {
                 vita2d_pgf_draw_text(font, 20, 350, C_RED, 0.85f,
                                      "Warning: may not have enough funds");
             }
-            draw_hint(font, "X: pay    Triangle: cancel");
+            draw_hint(font, "X: pay   \u25cb: cancel");
             break;
         }
 
@@ -654,9 +655,7 @@ int main(void) {
                 vita2d_pgf_draw_text(font, 20, 285, C_GRAY,  0.9f, "Invoice settled.");
             } else {
                 vita2d_pgf_draw_text(font, 20, 230, C_RED,  2.5f, "FAILED");
-                char em[64];
-                snprintf(em, sizeof(em), "Error %d", (int)s_melt_err);
-                vita2d_pgf_draw_text(font, 20, 285, C_GRAY, 0.9f, em);
+                vita2d_pgf_draw_text(font, 20, 285, C_GRAY, 0.9f, err_str(s_melt_err));
             }
             draw_hint(font, "Any button to continue");
             break;
@@ -684,7 +683,7 @@ int main(void) {
                                  "Pay the invoice from your");
             vita2d_pgf_draw_text(font, 20, 290, C_GRAY, 0.78f,
                                  "lightning wallet, then press X.");
-            draw_hint(font, "X: check payment    Triangle: cancel");
+            draw_hint(font, "X: check payment   \u25cb: cancel");
             break;
         }
 
@@ -698,9 +697,7 @@ int main(void) {
                 vita2d_pgf_draw_text(font, 20, 285, C_YELLOW, 1.2f, am);
             } else {
                 vita2d_pgf_draw_text(font, 20, 230, C_RED, 2.0f, "FAILED");
-                char em[64];
-                snprintf(em, sizeof(em), "Error %d", (int)s_mint_err);
-                vita2d_pgf_draw_text(font, 20, 285, C_GRAY, 0.9f, em);
+                vita2d_pgf_draw_text(font, 20, 285, C_GRAY, 0.9f, err_str(s_mint_err));
             }
             draw_hint(font, "Any button to continue");
             break;
@@ -715,7 +712,7 @@ int main(void) {
         // ---- SEND QR ----
         case SCR_SEND_QR:
             draw_animated_qr_screen(font, "SCAN TOKEN", s_send_amount,
-                                    "Triangle: done (saved in exports)");
+                                    "\u25cb: done (saved in exports)");
             break;
 
         // ---- EXPORTS LIST ----
@@ -757,19 +754,19 @@ int main(void) {
                          s_export_sel + 1, s_export_count);
                 vita2d_pgf_draw_text(font, 840, 34, C_DIM, 0.65f, idx);
             }
-            draw_hint(font, "X: view QR    Square: delete    Circle: back");
+            draw_hint(font, "X: show QR   \u25a1: delete   \u25cb: back");
             break;
         }
 
         // ---- EXPORT VIEW (re-display QR for a saved token) ----
         case SCR_EXPORT_VIEW:
             draw_animated_qr_screen(font, "RESEND TOKEN", s_export_view_amount,
-                                    "Circle: back to list");
+                                    "\u25cb: back");
             break;
 
         // ---- RECEIVE ----
         case SCR_RECEIVE: {
-            draw_header(font, "RECEIVE TOKEN");
+            draw_header(font, "SCAN QR");
 
             // camera preview: texture already updated in input section
             if (s_cam_tex)
@@ -779,7 +776,7 @@ int main(void) {
             double prog = qr_reader_progress();
             char pct[24];
             snprintf(pct, sizeof(pct), "%.0f%%", prog * 100.0);
-            vita2d_pgf_draw_text(font, 520, 130, C_GRAY,  0.75f, "bc-ur decoded");
+            vita2d_pgf_draw_text(font, 520, 130, C_GRAY,  0.75f, "SCAN PROGRESS");
             vita2d_pgf_draw_text(font, 520, 185, C_CYAN,  2.0f,  pct);
 
             float bar_x = 520.0f, bar_y = 230.0f, bar_w = 420.0f, bar_h = 22.0f;
@@ -792,7 +789,7 @@ int main(void) {
             vita2d_pgf_draw_text(font, 520, 322, C_DIM, 0.7f,
                                  "the back camera.");
 
-            draw_hint(font, "Circle: cancel");
+            draw_hint(font, "\u25cb: cancel");
             break;
         }
 
@@ -809,9 +806,7 @@ int main(void) {
                                      "Proofs stored. Balance updated on home.");
             } else {
                 vita2d_pgf_draw_text(font, 20, 230, C_RED,  2.0f, "FAILED");
-                char em[64];
-                snprintf(em, sizeof(em), "Error %d", (int)s_recv_err);
-                vita2d_pgf_draw_text(font, 20, 290, C_GRAY, 0.85f, em);
+                vita2d_pgf_draw_text(font, 20, 290, C_GRAY, 0.85f, err_str(s_recv_err));
             }
             draw_hint(font, "Any button to continue");
             break;
@@ -833,7 +828,7 @@ int main(void) {
             if (qe == CASHU_OK) {
                 s_screen = SCR_MELT_QUOTE;
             } else {
-                snprintf(s_errmsg, sizeof(s_errmsg), "Quote failed (err %d)", (int)qe);
+                snprintf(s_errmsg, sizeof(s_errmsg), "Payment quote failed: %s", err_str(qe));
                 go_home();
             }
         }
@@ -855,7 +850,7 @@ int main(void) {
                 mint_quote_free(&q2);
                 if (e != CASHU_OK) {
                     snprintf(s_errmsg, sizeof(s_errmsg),
-                             "State check failed (err %d)", (int)e);
+                             "Payment check failed: %s", err_str(e));
                 }
             }
         }
