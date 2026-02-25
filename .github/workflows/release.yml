@@ -23,7 +23,8 @@ jobs:
         run: vdpm mbedtls
 
       - name: Patch bc-ur (missing cstring include)
-        run: sed -i '/#include <limits>/a #include <cstring>' deps/bc-ur/src/xoshiro256.cpp
+        run: |
+          sed -i '/#include <limits>/a #include <cstring>' deps/bc-ur/src/xoshiro256.cpp
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
