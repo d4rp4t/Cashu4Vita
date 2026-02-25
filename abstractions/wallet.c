@@ -667,89 +667,93 @@ cashu_err_t wallet_send(uint64_t amount, char **token_out) {
     err = cashu_get_keysets(s_mint_url, &fee_ks, &fee_count);
     if (err != CASHU_OK) { proof_array_free(pool, pool_n); return err; }
 
-    // 3. select inputs - first attempt covers `amount`, then recheck against fee
+    // 3. select inputs covering `amount`
     proof_t *inputs = NULL; size_t inp_n = 0;
     err = select_proofs(pool, pool_n, amount, &inputs, &inp_n);
     if (err != CASHU_OK) goto done_fee_ks;
 
+    proof_array_free(pool, pool_n); pool = NULL;
+
     {
-        uint64_t fee     = compute_fee(inputs, inp_n, fee_ks, fee_count);
-        uint64_t inp_sum = proof_array_sum(inputs, inp_n);
+        uint64_t fee       = compute_fee(inputs, inp_n, fee_ks, fee_count);
+        uint64_t inp_sum   = proof_array_sum(inputs, inp_n);
+        uint64_t overshoot = inp_sum - amount;
 
-        if (inp_sum < amount + fee) {
-            // need more — retry with a larger target
-            proof_array_free(inputs, inp_n); inputs = NULL; inp_n = 0;
-            err = select_proofs(pool, pool_n, amount + fee, &inputs, &inp_n);
-            if (err != CASHU_OK) goto done_fee_ks;
-            fee     = compute_fee(inputs, inp_n, fee_ks, fee_count);
-            inp_sum = proof_array_sum(inputs, inp_n);
-            if (inp_sum < amount + fee) {
-                err = CASHU_ERR_INSUFFICIENT_FUNDS; goto done_inputs;
-            }
-        }
+        if (overshoot >= fee) {
+            // swap path: enough overshoot to cover fee, get change back
+            uint64_t change = overshoot - fee;
+            uint64_t out_amounts[64];
+            size_t   out_n        = decompose(amount, out_amounts);
+            size_t   change_start = out_n;
+            if (change > 0) out_n += decompose(change, out_amounts + change_start);
 
-        // 4. decompose outputs as [send denominations | change denominations]
-        uint64_t change = inp_sum - amount - fee;
-        uint64_t out_amounts[64];
-        size_t   out_n        = decompose(amount, out_amounts);
-        size_t   change_start = out_n;
-        if (change > 0) out_n += decompose(change, out_amounts + change_start);
+            keyset_t *keysets = NULL; size_t ks_count = 0;
+            err = cashu_get_keys(s_mint_url, &keysets, &ks_count);
+            if (err != CASHU_OK) goto done_inputs;
 
-        // 5. keys
-        keyset_t *keysets = NULL; size_t ks_count = 0;
-        err = cashu_get_keys(s_mint_url, &keysets, &ks_count);
-        if (err != CASHU_OK) goto done_inputs;
+            keyset_t *ks = find_ks_by_unit(keysets, ks_count, s_unit);
+            if (!ks) { err = CASHU_ERR_PROTOCOL; goto done_keys; }
 
-        keyset_t *ks = find_ks_by_unit(keysets, ks_count, s_unit);
-        if (!ks) { err = CASHU_ERR_PROTOCOL; goto done_keys; }
+            out_mat_t         *mat  = malloc(out_n * sizeof(out_mat_t));
+            blinded_message_t *msgs = malloc(out_n * sizeof(blinded_message_t));
+            if (!mat || !msgs) { err = CASHU_ERR_OOM; goto done_out; }
 
-        // 6. build + swap + unblind
-        out_mat_t         *mat  = malloc(out_n * sizeof(out_mat_t));
-        blinded_message_t *msgs = malloc(out_n * sizeof(blinded_message_t));
-        if (!mat || !msgs) { err = CASHU_ERR_OOM; goto done_out; }
+            err = build_outputs(out_amounts, out_n, ks, mat, msgs);
+            if (err != CASHU_OK) goto done_out;
 
-        err = build_outputs(out_amounts, out_n, ks, mat, msgs);
-        if (err != CASHU_OK) goto done_out;
+            blind_signature_t *sigs = NULL; size_t sig_count = 0;
+            err = cashu_swap(s_mint_url, inputs, inp_n, msgs, out_n, &sigs, &sig_count);
+            if (err != CASHU_OK) goto done_out;
+            if (sig_count != out_n) { err = CASHU_ERR_PROTOCOL; goto done_sigs; }
 
-        blind_signature_t *sigs = NULL; size_t sig_count = 0;
-        err = cashu_swap(s_mint_url, inputs, inp_n, msgs, out_n, &sigs, &sig_count);
-        if (err != CASHU_OK) goto done_out;
-        if (sig_count != out_n) { err = CASHU_ERR_PROTOCOL; goto done_sigs; }
+            proof_t *new_proofs = malloc(out_n * sizeof(proof_t));
+            if (!new_proofs) { err = CASHU_ERR_OOM; goto done_sigs; }
 
-        proof_t *new_proofs = malloc(out_n * sizeof(proof_t));
-        if (!new_proofs) { err = CASHU_ERR_OOM; goto done_sigs; }
+            size_t built = 0;
+            err = do_unblind_all(out_amounts, out_n, sigs, mat, ks, new_proofs, &built);
+            if (err != CASHU_OK) goto done_proofs;
 
-        size_t built = 0;
-        err = do_unblind_all(out_amounts, out_n, sigs, mat, ks, new_proofs, &built);
-        if (err != CASHU_OK) goto done_proofs;
+            // atomic remove inputs, save change
+            err = storage_swap(inputs, inp_n,
+                               new_proofs + change_start, out_n - change_start,
+                               s_mint_url);
+            if (err != CASHU_OK) goto done_proofs;
 
-        // 7. atomic storage: spent inputs out, change proofs in
-        err = storage_swap(inputs, inp_n,
-                           new_proofs + change_start, out_n - change_start,
-                           s_mint_url);
-        if (err != CASHU_OK) goto done_proofs;
-
-        // 8. encode token from send proofs (indices 0..change_start-1)
-        token_t tok = {
-            .mint_url    = s_mint_url,
-            .unit        = s_unit,
-            .proofs      = new_proofs,
-            .proof_count = change_start,
-            .memo        = NULL,
-        };
-        err = token_encode(&tok, token_out);
+            token_t tok = {
+                .mint_url    = s_mint_url,
+                .unit        = s_unit,
+                .proofs      = new_proofs,
+                .proof_count = change_start,
+                .memo        = NULL,
+            };
+            err = token_encode(&tok, token_out);
 
 done_proofs:
-        for (size_t i = 0; i < built; i++) { free(new_proofs[i].id); free(new_proofs[i].secret); }
-        free(new_proofs);
+            for (size_t i = 0; i < built; i++) { free(new_proofs[i].id); free(new_proofs[i].secret); }
+            free(new_proofs);
 done_sigs:
-        for (size_t i = 0; i < sig_count; i++) { free(sigs[i].id); free(sigs[i].C_); }
-        free(sigs);
+            for (size_t i = 0; i < sig_count; i++) { free(sigs[i].id); free(sigs[i].C_); }
+            free(sigs);
 done_out:
-        free(mat); free(msgs);
+            free(mat); free(msgs);
 done_keys:
-        for (size_t i = 0; i < ks_count; i++) keyset_free(&keysets[i]);
-        free(keysets);
+            for (size_t i = 0; i < ks_count; i++) keyset_free(&keysets[i]);
+            free(keysets);
+        } else {
+            // no-swap path: sending full balance or negligible overshoot
+            // fee will be paid by the recipient during wallet_receive
+            err = storage_swap(inputs, inp_n, NULL, 0, s_mint_url);
+            if (err != CASHU_OK) goto done_inputs;
+
+            token_t tok = {
+                .mint_url    = s_mint_url,
+                .unit        = s_unit,
+                .proofs      = inputs,
+                .proof_count = inp_n,
+                .memo        = NULL,
+            };
+            err = token_encode(&tok, token_out);
+        }
     }
 done_inputs:
     proof_array_free(inputs, inp_n);
