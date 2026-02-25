@@ -15,6 +15,9 @@ void cashu_http_term(void);
 // last raw return code set on every CASHU_ERR_HTTP
 int cashu_http_last_sce_err(void);
 
+// last HTTP error response body (set on every CASHU_ERR_HTTP_STATUS), never NULL
+const char *cashu_http_last_error_body(void);
+
 // GET /v1/keys
 cashu_err_t cashu_get_keys(const char *mint_url, keyset_t **out, size_t *count);
 
@@ -50,8 +53,13 @@ cashu_err_t cashu_melt(const char *mint_url, const char *quote,
 
 // POST /v1/swap
 cashu_err_t cashu_swap(const char *mint_url,
-                       const proof_t *inputs,   size_t inp_n,
+                       const proof_t *inputs, size_t inp_n,
                        const blinded_message_t *outputs, size_t out_n,
                        blind_signature_t **sigs_out, size_t *sig_count);
+
+// POST to an arbitrary url with a raw JSON body
+// used for nut-18 payment request delivery
+// response body is discarded.
+cashu_err_t cashu_http_post_raw(const char *url, const char *body);
 
 #endif //HTTP_H

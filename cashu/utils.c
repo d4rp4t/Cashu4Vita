@@ -15,8 +15,13 @@ static const int8_t hex_lut[256] = {
 };
 
 void hex_encode(const uint8_t *bytes, size_t len, char *out) {
-    for (size_t i = 0; i < len; i++)
-        sprintf(out + i * 2, "%02x", bytes[i]);
+    static const char hex[] = "0123456789abcdef";
+
+    for (size_t i = 0; i < len; i++) {
+        out[2*i]     = hex[(bytes[i] >> 4) & 0xF];
+        out[2*i + 1] = hex[bytes[i] & 0xF];
+    }
+
     out[len * 2] = '\0';
 }
 

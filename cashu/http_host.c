@@ -14,6 +14,10 @@
 // Implements the same cashu_http_* API as http.c - used for host builds only.
 //===============================================================================
 
+static char s_last_err_body[512] = {0};
+
+const char *cashu_http_last_error_body(void) { return s_last_err_body; }
+
 
 
 //===============================================================================
@@ -78,8 +82,14 @@ static cashu_err_t do_request(method_t method, const char *url,
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     if (status < 200 || status >= 300) {
+        if (buf.data) {
+            strncpy(s_last_err_body, buf.data, sizeof(s_last_err_body) - 1);
+            s_last_err_body[sizeof(s_last_err_body) - 1] = '\0';
+        } else {
+            s_last_err_body[0] = '\0';
+        }
         fprintf(stderr, "[http] %ld %s\n  body: %s\n",
-                status, url, buf.data ? buf.data : "(empty)");
+                status, url, s_last_err_body[0] ? s_last_err_body : "(empty)");
         ret = CASHU_ERR_HTTP_STATUS;
         goto cleanup;
     }
@@ -222,6 +232,13 @@ cashu_err_t cashu_melt(const char *mint_url, const char *quote,
     free(url); free(req_body);
     if (err != CASHU_OK) return err;
     err = json_parse_melt_quote(resp, out);
+    free(resp);
+    return err;
+}
+
+cashu_err_t cashu_http_post_raw(const char *url, const char *body) {
+    char *resp = NULL;
+    cashu_err_t err = do_request(M_POST, url, body, &resp);
     free(resp);
     return err;
 }

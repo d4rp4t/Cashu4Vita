@@ -8,10 +8,11 @@
 #include <stdint.h>
 
 typedef enum {
-    QR_READER_SCANNING,   // waiting for QR
-    QR_READER_COMPLETE,   // cashu token ready (cashuB or bc-ur decoded)
-    QR_READER_BOLT11,     // lightning invoice ready
-    QR_READER_ERROR,      // decode error
+    QR_READER_SCANNING,           // waiting for QR
+    QR_READER_COMPLETE,           // cashu token ready (token or bc-ur decoded)
+    QR_READER_BOLT11,             // lightning invoice ready
+    QR_READER_PAYMENT_REQUEST,    // cashu payment request ready
+    QR_READER_ERROR,              // decode error
 } qr_reader_state_t;
 
 /*

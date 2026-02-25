@@ -18,10 +18,12 @@
 
 #define NET_POOL_SIZE (4 * 1024 * 1024)
 
-static void *s_net_mem   = NULL;
-static int   s_last_curl = 0;  /* last CURLcode, for debugging */
+static void *s_net_mem      = NULL;
+static int   s_last_curl    = 0;           /* last CURLcode, for debugging */
+static char  s_last_err_body[512] = {0};   /* last HTTP error response body */
 
-int cashu_http_last_sce_err(void) { return s_last_curl; }
+int         cashu_http_last_sce_err(void)    { return s_last_curl; }
+const char *cashu_http_last_error_body(void) { return s_last_err_body; }
 
 // ====================================================================
 //                               helpers
@@ -90,7 +92,16 @@ static cashu_err_t do_request(method_t method, const char *url,
 
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    if (status < 200 || status >= 300) { ret = CASHU_ERR_HTTP_STATUS; goto cleanup; }
+    if (status < 200 || status >= 300) {
+        if (buf.data) {
+            strncpy(s_last_err_body, buf.data, sizeof(s_last_err_body) - 1);
+            s_last_err_body[sizeof(s_last_err_body) - 1] = '\0';
+        } else {
+            s_last_err_body[0] = '\0';
+        }
+        ret = CASHU_ERR_HTTP_STATUS;
+        goto cleanup;
+    }
 
     *body_out = buf.data;
     buf.data  = NULL;
@@ -222,6 +233,13 @@ cashu_err_t cashu_melt(const char *mint_url, const char *quote,
     cashu_err_t err = do_request(M_POST, url, body, &resp); free(url); free(body);
     if (err != CASHU_OK) return err;
     err = json_parse_melt_quote(resp, out); free(resp); return err;
+}
+
+cashu_err_t cashu_http_post_raw(const char *url, const char *body) {
+    char *resp = NULL;
+    cashu_err_t err = do_request(M_POST, url, body, &resp);
+    free(resp);
+    return err;
 }
 
 cashu_err_t cashu_swap(const char *mint_url,

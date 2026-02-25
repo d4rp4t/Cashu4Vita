@@ -108,7 +108,9 @@ static int has_prefix(const char *s, const char *prefix) {
 }
 
 static void process_payload(const uint8_t *data, size_t len) {
-    if (s_state == QR_READER_COMPLETE || s_state == QR_READER_BOLT11) return;
+    if (s_state == QR_READER_COMPLETE  ||
+        s_state == QR_READER_BOLT11    ||
+        s_state == QR_READER_PAYMENT_REQUEST) return;
 
     char *str = malloc(len + 1);
     if (!str) return;
@@ -120,7 +122,16 @@ static void process_payload(const uint8_t *data, size_t len) {
     if (strncmp(p, "cashu:", 6) == 0)        p += 6;  /* cashu:cashuB... */
     else if (has_prefix(p, "lightning:")) p += 10; /* lightning:lnbc... */
 
-    if (strncmp(p, "cashu", 5) == 0) {
+    if (strncmp(p, "creqA", 5) == 0) {
+        // cashu payment request
+        char *req = strdup(p);
+        free(str);
+        if (!req) return;
+        free(s_result);
+        s_result = req;
+        s_state  = QR_READER_PAYMENT_REQUEST;
+
+    } else if (strncmp(p, "cashu", 5) == 0) {
         /* cashu token — strdup from p to drop any leading URI scheme */
         char *tok = strdup(p);
         free(str);
@@ -238,7 +249,9 @@ double qr_reader_progress(void) {
 }
 
 char *qr_reader_result(void) {
-    if (s_state != QR_READER_COMPLETE && s_state != QR_READER_BOLT11) return NULL;
+    if (s_state != QR_READER_COMPLETE &&
+        s_state != QR_READER_BOLT11   &&
+        s_state != QR_READER_PAYMENT_REQUEST) return NULL;
     char *r  = s_result;
     s_result = NULL;
     return r;

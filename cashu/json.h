@@ -19,6 +19,12 @@ char *json_melt_request(const char *quote, const proof_t *inputs, size_t count,
 char *json_swap_request(const proof_t *inputs, size_t inp_n,
                         const blinded_message_t *outputs, size_t out_n);
 
+// nut-18 POST transport payload
+// id and memo are optional
+char *json_pr_payload(const char *id, const char *memo,
+                      const char *mint, const char *unit,
+                      const proof_t *proofs, size_t proof_count);
+
 
 cashu_err_t json_parse_mint_quote(const char *json, mint_quote_t *out);
 cashu_err_t json_parse_melt_quote(const char *json, melt_quote_t *out);

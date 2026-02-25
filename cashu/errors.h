@@ -29,6 +29,8 @@ typedef enum {
     CASHU_ERR_PROTOCOL,          // mint returned protocol exception
 
     CASHU_ERR_INSUFFICIENT_FUNDS, // wallet balance < requested amount
+
+    CASHU_ERR_INVALID_PAYMENT_REQUEST, // bad creqA prefix or missing required field
 } cashu_err_t;
 
 #endif //ERRORS_H

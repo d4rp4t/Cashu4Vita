@@ -16,6 +16,7 @@
 #include "cashu/http.h"
 #include "cashu/protocol.h"
 #include "cashu/models.h"
+#include "cashu/encoding.h"
 #include "cashu/bcur.h"
 #include "qrcodegen.h"
 
@@ -63,9 +64,10 @@ typedef enum {
     SCR_EXPORTS,
     SCR_EXPORT_VIEW,
 
-    // receive
+    // receive / payment request
     SCR_RECEIVE,
     SCR_RECEIVE_RESULT,
+    SCR_CREQ_CONFIRM,   // NUT-18 payment request confirmation
 } screen_t;
 
 // =============================================================================
@@ -174,8 +176,9 @@ static const char *err_str(cashu_err_t e) {
     case CASHU_ERR_HTTP_STATUS:       return "Mint returned an error";
     case CASHU_ERR_JSON_PARSE:
     case CASHU_ERR_JSON_MISSING:      return "Bad response from mint";
-    case CASHU_ERR_INVALID_TOKEN:     return "Invalid token";
-    case CASHU_ERR_INSUFFICIENT_FUNDS: return "Insufficient funds";
+    case CASHU_ERR_INVALID_TOKEN:              return "Invalid token";
+    case CASHU_ERR_INVALID_PAYMENT_REQUEST:    return "Invalid payment request";
+    case CASHU_ERR_INSUFFICIENT_FUNDS:         return "Insufficient funds";
     case CASHU_ERR_PROTOCOL:          return "Mint rejected request";
     case CASHU_ERR_IO:                return "Storage error";
     case CASHU_ERR_CBOR_ENCODE:
@@ -236,6 +239,10 @@ static cashu_err_t     s_recv_err     = CASHU_OK;
 static int             s_exec_receive = 0;
 static int             s_recv_qr_ok   = 1;    // 0 = QR/bcur decode failed
 static vita2d_texture *s_cam_tex      = NULL;  // grayscale camera preview texture
+
+// payment request (NUT-18 POST transport)
+static payment_request_t s_creq;
+static int               s_exec_pay_request = 0;
 
 // =============================================================================
 //                                helpers
@@ -299,6 +306,12 @@ static void recv_cleanup(void) {
     free(s_recv_token); s_recv_token = NULL;
     s_exec_receive = 0;
     s_recv_qr_ok   = 1;
+}
+
+static void creq_reset(void) {
+    payment_request_free(&s_creq);
+    memset(&s_creq, 0, sizeof(s_creq));
+    s_exec_pay_request = 0;
 }
 
 // ---- animated QR helper (shared by SEND_QR and EXPORT_VIEW) --------------
@@ -555,6 +568,20 @@ int main(void) {
                     s_recv_qr_ok = 0;
                     s_screen     = SCR_RECEIVE_RESULT;
                 }
+            } else if (rs == QR_READER_PAYMENT_REQUEST) {
+                char *raw = qr_reader_result();
+                qr_reader_term();
+                vita2d_free_texture(s_cam_tex); s_cam_tex = NULL;
+                creq_reset();
+                cashu_err_t de = raw ? creq_decode(raw, &s_creq) : CASHU_ERR_INVALID_PAYMENT_REQUEST;
+                free(raw);
+                if (de == CASHU_OK) {
+                    s_screen = SCR_CREQ_CONFIRM;
+                } else {
+                    snprintf(s_errmsg, sizeof(s_errmsg),
+                             "Payment request error: %s", err_str(de));
+                    go_home();
+                }
             } else if (rs == QR_READER_ERROR) {
                 s_recv_qr_ok = 0;
                 qr_reader_term();
@@ -568,6 +595,12 @@ int main(void) {
 
         case SCR_RECEIVE_RESULT:
             if (pressed) { go_home(); }
+            break;
+
+        // ---- PAYMENT REQUEST CONFIRM ----
+        case SCR_CREQ_CONFIRM:
+            if (pressed & SCE_CTRL_CROSS)  { s_exec_pay_request = 1; } /* screen set in exec block */
+            if (pressed & SCE_CTRL_CIRCLE) { creq_reset(); go_home(); }
             break;
 
         default: break;
@@ -793,20 +826,64 @@ int main(void) {
             break;
         }
 
-        // ---- RECEIVE RESULT ----
+        // ---- PAYMENT REQUEST CONFIRM ----
+        case SCR_CREQ_CONFIRM: {
+            draw_header(font, "PAY REQUEST");
+
+            if (s_creq.description)
+                vita2d_pgf_draw_text(font, 20, 105, C_GRAY, 0.75f, s_creq.description);
+
+            char am[48];
+            if (s_creq.has_amount)
+                snprintf(am, sizeof(am), "%llu sat", (unsigned long long)s_creq.amount);
+            else
+                snprintf(am, sizeof(am), "any amount");
+            vita2d_pgf_draw_text(font, 20, s_creq.description ? 150 : 120,
+                                 C_YELLOW, 2.0f, am);
+
+            /* find first post transport to show target URL */
+            const char *post_target = NULL;
+            for (size_t i = 0; i < s_creq.transport_count && !post_target; i++)
+                if (strcmp(s_creq.transports[i].type, "post") == 0)
+                    post_target = s_creq.transports[i].target;
+            if (post_target) {
+                char tgt[52]; trunc_str(post_target, tgt, 48);
+                vita2d_pgf_draw_text(font, 20, 270, C_GRAY,  0.7f, "SEND TO");
+                vita2d_pgf_draw_text(font, 20, 305, C_WHITE, 0.8f, tgt);
+            }
+
+            if (s_creq.mint_count > 0) {
+                char ml[52]; trunc_str(s_creq.mints[0], ml, 48);
+                vita2d_pgf_draw_text(font, 20, 360, C_GRAY, 0.7f, "MINT");
+                vita2d_pgf_draw_text(font, 20, 393, C_DIM,  0.75f, ml);
+            }
+
+            if (s_creq.has_amount && s_balance < s_creq.amount)
+                vita2d_pgf_draw_text(font, 20, 430, C_RED, 0.8f, "Insufficient funds");
+
+            draw_hint(font, "X: pay   \u25cb: cancel");
+            break;
+        }
+
+        // ---- RECEIVE / PAY RESULT ----
         case SCR_RECEIVE_RESULT:
-            draw_header(font, "RECEIVE RESULT");
+            draw_header(font, "RESULT");
             if (!s_recv_qr_ok) {
                 vita2d_pgf_draw_text(font, 20, 230, C_RED,  2.0f, "QR ERROR");
                 vita2d_pgf_draw_text(font, 20, 290, C_GRAY, 0.85f,
-                                     "bc-ur decoding failed. Try again.");
+                                     "Decoding failed. Try again.");
             } else if (s_recv_err == CASHU_OK) {
-                vita2d_pgf_draw_text(font, 20, 230, C_GREEN, 2.0f, "RECEIVED");
+                vita2d_pgf_draw_text(font, 20, 230, C_GREEN, 2.0f, "DONE");
                 vita2d_pgf_draw_text(font, 20, 290, C_GRAY,  0.85f,
-                                     "Proofs stored. Balance updated on home.");
+                                     "Balance updated.");
             } else {
                 vita2d_pgf_draw_text(font, 20, 230, C_RED,  2.0f, "FAILED");
                 vita2d_pgf_draw_text(font, 20, 290, C_GRAY, 0.85f, err_str(s_recv_err));
+                const char *body = cashu_http_last_error_body();
+                if (body && body[0]) {
+                    char trunc[80]; trunc_str(body, trunc, sizeof(trunc));
+                    vita2d_pgf_draw_text(font, 20, 340, C_DIM, 0.65f, trunc);
+                }
             }
             draw_hint(font, "Any button to continue");
             break;
@@ -878,11 +955,24 @@ int main(void) {
                 s_total_balance = wallet_balance();
             }
         }
+
+        if (s_exec_pay_request) {
+            s_exec_pay_request = 0;
+            s_recv_err = wallet_pay_request(&s_creq);
+            creq_reset();
+            s_recv_qr_ok = 1;   /* reuse receive result screen */
+            if (s_recv_err == CASHU_OK) {
+                s_balance       = wallet_balance_for(wallet_active_mint());
+                s_total_balance = wallet_balance();
+            }
+            s_screen = SCR_RECEIVE_RESULT;
+        }
     }
 
     send_reset();
     exports_cleanup();
     recv_cleanup();
+    creq_reset();
     mint_reset();
     melt_reset();
     vita2d_free_pgf(font);

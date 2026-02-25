@@ -6,8 +6,12 @@
 #include <stdint.h>
 #include <mbedtls/sha256.h>
 #include <secp256k1.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "models.h"
+#include "../deps/secp256k1/src/group.h"
 
 static const char *DOMAIN_SEPARATOR = "Secp256k1_HashToCurve_Cashu_";
 static secp256k1_context *ctx = NULL;
@@ -111,4 +115,110 @@ cashu_err_t unblind(const secp256k1_pubkey *C_, const uint8_t *r,
         return CASHU_ERR_INVALID_POINT;
 
     return CASHU_OK;
+}
+
+
+/*
+ * SHA256 of the UTF-8 string formed by concatenating the
+ * lowercase hex representations of the four points serialized uncompressed
+ * (65 bytes -> 130 hex chars each, total 520 chars)
+ */
+static cashu_err_t hash_e(secp256k1_pubkey *R1, secp256k1_pubkey *R2,
+                           const secp256k1_pubkey *A, const secp256k1_pubkey *C_,
+                           uint8_t out32[32]) {
+    uint8_t bin[65];
+    char hexbuf[131];
+    size_t out_len;
+    cashu_err_t ret = CASHU_ERR_INVALID_POINT;
+
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    mbedtls_sha256_starts(&sha, 0);
+
+    // cast away const for the secp256k1 serialize API (does not mutate)
+    secp256k1_pubkey *keys[4] = {
+        R1, R2,
+        (secp256k1_pubkey *)(uintptr_t)A,
+        (secp256k1_pubkey *)(uintptr_t)C_
+    };
+
+    for (int i = 0; i < 4; i++) {
+        out_len = sizeof(bin);
+        if (!secp256k1_ec_pubkey_serialize(ctx, bin, &out_len, keys[i],
+                                           SECP256K1_EC_UNCOMPRESSED))
+            goto cleanup;
+        hex_encode(bin, out_len, hexbuf);
+        mbedtls_sha256_update(&sha, (const uint8_t *)hexbuf, 130);
+    }
+
+    mbedtls_sha256_finish(&sha, out32);
+    ret = CASHU_OK;
+
+cleanup:
+    mbedtls_sha256_free(&sha);
+    return ret;
+}
+
+/*
+ * verify_dleq_blind_sig - DLEQ verification for a blind signature.
+ * B_, C_ - the blinded message and mint's blind signature
+ * e32, s32 - 32-byte DLEQ components from the mint
+ * A - mint's public key for this denomination
+ */
+bool verify_dleq_blind_sig(const secp256k1_pubkey *B_,
+                            const secp256k1_pubkey *C_,
+                            const uint8_t e32[32],
+                            const uint8_t s32[32],
+                            const secp256k1_pubkey *A) {
+    secp256k1_pubkey sG, neg_eA, r1;
+    secp256k1_pubkey sB_, neg_eC_, r2;
+    uint8_t neg_e[32];
+    uint8_t computed_e[32];
+
+    memcpy(neg_e, e32, 32);
+    if (!secp256k1_ec_seckey_negate(ctx, neg_e)) return false; // shouldn't happen
+
+    // R1 = s*G - e*A
+    if (!secp256k1_ec_pubkey_create(ctx, &sG, s32)) return false;
+    neg_eA = *A;
+    if (!secp256k1_ec_pubkey_tweak_mul(ctx, &neg_eA, neg_e)) return false;
+    const secp256k1_pubkey *p1[2] = { &sG, &neg_eA };
+    if (!secp256k1_ec_pubkey_combine(ctx, &r1, p1, 2)) return false;
+
+    // R2 = s*B_ - e*C_
+    sB_ = *B_;
+    if (!secp256k1_ec_pubkey_tweak_mul(ctx, &sB_, s32)) return false;
+    neg_eC_ = *C_;
+    if (!secp256k1_ec_pubkey_tweak_mul(ctx, &neg_eC_, neg_e)) return false;
+    const secp256k1_pubkey *p2[2] = { &sB_, &neg_eC_ };
+    if (!secp256k1_ec_pubkey_combine(ctx, &r2, p2, 2)) return false;
+
+    if (hash_e(&r1, &r2, A, C_, computed_e) != CASHU_OK) return false;
+    return memcmp(e32, computed_e, 32) == 0;
+}
+
+/*
+ * verify_dleq_unblinded - verify the DLEQ proof carried by an unblinded proof
+ */
+bool verify_dleq_unblinded(const uint8_t C_bytes[33],
+                            const uint8_t r32[32],
+                            const uint8_t e32[32],
+                            const uint8_t s32[32],
+                            const char *secret,
+                            size_t secret_len,
+                            const secp256k1_pubkey *A) {
+    // reconstruct C_ = C + r*A  (reverse of unblind: C = C_ - r*A)
+    secp256k1_pubkey C, rA, C_;
+    if (!secp256k1_ec_pubkey_parse(ctx, &C, C_bytes, 33)) return false;
+    rA = *A;
+    if (!secp256k1_ec_pubkey_tweak_mul(ctx, &rA, r32))    return false;
+    const secp256k1_pubkey *pts[2] = { &C, &rA };
+    if (!secp256k1_ec_pubkey_combine(ctx, &C_, pts, 2))   return false;
+
+    // reconstruct B_ = Y + r*G  (Y = hash_to_curve(secret))
+    secp256k1_pubkey Y, B_;
+    if (hash_to_curve((const uint8_t *)secret, secret_len, &Y) != CASHU_OK) return false;
+    if (blind(&Y, r32, &B_) != CASHU_OK)                  return false;
+
+    return verify_dleq_blind_sig(&B_, &C_, e32, s32, A);
 }

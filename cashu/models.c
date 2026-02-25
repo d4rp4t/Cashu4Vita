@@ -45,3 +45,15 @@ void melt_quote_free(melt_quote_t *q) {
     }
     free(q->change);
 }
+
+void payment_request_free(payment_request_t *r) {
+    if (!r) return;
+    free(r->id);
+    free(r->unit);
+    free(r->description);
+    for (size_t i = 0; i < r->mint_count; i++) free(r->mints[i]);
+    free(r->mints);
+    for (size_t i = 0; i < r->transport_count; i++)
+        free(r->transports[i].target);   // type[] is embedded, no free needed
+    free(r->transports);
+}

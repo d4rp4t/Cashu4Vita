@@ -4,6 +4,7 @@
 #include "wallet.h"
 #include "storage.h"
 #include "../cashu/http.h"
+#include "../cashu/json.h"
 #include "../cashu/protocol.h"
 #include "../cashu/encoding.h"
 #include "../cashu/utils.h"
@@ -220,10 +221,35 @@ static cashu_err_t do_unblind_all(const uint64_t *amounts, size_t n,
         size_t C_len = 33;
         secp256k1_ec_pubkey_serialize(crypto_ctx(), proofs[i].C, &C_len, &C,
                                       SECP256K1_EC_COMPRESSED);
-        proofs[i].amount = amounts[i];
-        proofs[i].id     = strdup(ks->id);
-        proofs[i].secret = strdup(mat[i].secret_hex);
+        proofs[i].amount   = amounts[i];
+        proofs[i].id       = strdup(ks->id);
+        proofs[i].secret   = strdup(mat[i].secret_hex);
         if (!proofs[i].id || !proofs[i].secret) return CASHU_ERR_OOM;
+
+        //carry DLEQ proof if the mint provided one
+        proofs[i].has_dleq = false;
+        if (sigs[i].has_dleq) {
+            hex_encode(mat[i].r, 32, proofs[i].dleq_r);
+            proofs[i].dleq_r[64] = '\0';
+            memcpy(proofs[i].dleq_e, sigs[i].dleq_e, 65);
+            memcpy(proofs[i].dleq_s, sigs[i].dleq_s, 65);
+            proofs[i].has_dleq = true;
+
+            secp256k1_pubkey B_;
+            uint8_t B_bytes_v[33];
+            hex_decode(mat[i].B_hex, B_bytes_v, 33);
+            if (!secp256k1_ec_pubkey_parse(crypto_ctx(), &B_, B_bytes_v, 33)) {
+                free(proofs[i].id); free(proofs[i].secret);
+                return CASHU_ERR_INVALID_POINT;
+            }
+            uint8_t dleq_e32[32], dleq_s32[32];
+            hex_decode(sigs[i].dleq_e, dleq_e32, 32);
+            hex_decode(sigs[i].dleq_s, dleq_s32, 32);
+            if (!verify_dleq_blind_sig(&B_, &C_, dleq_e32, dleq_s32, &A)) {
+                free(proofs[i].id); free(proofs[i].secret);
+                return CASHU_ERR_PROTOCOL;
+            }
+        }
         (*built)++;
     }
     return CASHU_OK;
@@ -265,10 +291,34 @@ static cashu_err_t do_unblind_change(const blind_signature_t *sigs, size_t sig_n
         size_t C_len = 33;
         secp256k1_ec_pubkey_serialize(crypto_ctx(), proofs[*built].C, &C_len, &C,
                                       SECP256K1_EC_COMPRESSED);
-        proofs[*built].amount = sigs[i].amount;
-        proofs[*built].id     = strdup(ks->id);
-        proofs[*built].secret = strdup(mat[i].secret_hex);
+        proofs[*built].amount   = sigs[i].amount;
+        proofs[*built].id       = strdup(ks->id);
+        proofs[*built].secret   = strdup(mat[i].secret_hex);
         if (!proofs[*built].id || !proofs[*built].secret) return CASHU_ERR_OOM;
+
+        proofs[*built].has_dleq = false;
+        if (sigs[i].has_dleq) {
+            hex_encode(mat[i].r, 32, proofs[*built].dleq_r);
+            proofs[*built].dleq_r[64] = '\0';
+            memcpy(proofs[*built].dleq_e, sigs[i].dleq_e, 65);
+            memcpy(proofs[*built].dleq_s, sigs[i].dleq_s, 65);
+            proofs[*built].has_dleq = true;
+
+            secp256k1_pubkey B_;
+            uint8_t B_bytes_v[33];
+            hex_decode(mat[i].B_hex, B_bytes_v, 33);
+            if (!secp256k1_ec_pubkey_parse(crypto_ctx(), &B_, B_bytes_v, 33)) {
+                free(proofs[*built].id); free(proofs[*built].secret);
+                return CASHU_ERR_INVALID_POINT;
+            }
+            uint8_t dleq_e32[32], dleq_s32[32];
+            hex_decode(sigs[i].dleq_e, dleq_e32, 32);
+            hex_decode(sigs[i].dleq_s, dleq_s32, 32);
+            if (!verify_dleq_blind_sig(&B_, &C_, dleq_e32, dleq_s32, &A)) {
+                free(proofs[*built].id); free(proofs[*built].secret);
+                return CASHU_ERR_PROTOCOL;
+            }
+        }
         (*built)++;
     }
     return CASHU_OK;
@@ -741,8 +791,38 @@ cashu_err_t wallet_receive(const char *token) {
     if (!ks) { err = CASHU_ERR_PROTOCOL; goto done_keys; }
 
     {
-        out_mat_t         *mat  = malloc(out_n * sizeof(out_mat_t));
-        blinded_message_t *msgs = malloc(out_n * sizeof(blinded_message_t));
+        out_mat_t         *mat  = NULL;
+        blinded_message_t *msgs = NULL;
+
+        // verify DLEQ proofs carried in the received token
+        for (size_t i = 0; i < tok.proof_count; i++) {
+            if (!tok.proofs[i].has_dleq) continue;
+            secp256k1_pubkey A_pub;
+            int found_key = 0;
+            for (size_t ki = 0; ki < ks_count && !found_key; ki++) {
+                if (!keysets[ki].id ||
+                    strcmp(keysets[ki].id, tok.proofs[i].id) != 0) continue;
+                const keyset_key_t *k = find_key(&keysets[ki], tok.proofs[i].amount);
+                if (!k) continue;
+                uint8_t A_bytes_v[33];
+                hex_decode(k->pubkey, A_bytes_v, 33);
+                if (secp256k1_ec_pubkey_parse(crypto_ctx(), &A_pub, A_bytes_v, 33))
+                    found_key = 1;
+            }
+            if (!found_key) { err = CASHU_ERR_PROTOCOL; goto done_out; }
+            uint8_t r32_v[32], e32_v[32], s32_v[32];
+            hex_decode(tok.proofs[i].dleq_r, r32_v, 32);
+            hex_decode(tok.proofs[i].dleq_e, e32_v, 32);
+            hex_decode(tok.proofs[i].dleq_s, s32_v, 32);
+            if (!verify_dleq_unblinded(tok.proofs[i].C, r32_v, e32_v, s32_v,
+                                        tok.proofs[i].secret,
+                                        strlen(tok.proofs[i].secret), &A_pub)) {
+                err = CASHU_ERR_PROTOCOL; goto done_out;
+            }
+        }
+
+        mat  = malloc(out_n * sizeof(out_mat_t));
+        msgs = malloc(out_n * sizeof(blinded_message_t));
         if (!mat || !msgs) { err = CASHU_ERR_OOM; goto done_out; }
 
         err = build_outputs(out_amounts, out_n, ks, mat, msgs);
@@ -780,6 +860,63 @@ done_keys:
     for (size_t i = 0; i < ks_count; i++) keyset_free(&keysets[i]);
     free(keysets);
     token_free(&tok);
+    return err;
+}
+
+// ==============================================================================
+//                           NUT-18 payment request (POST)
+// ==============================================================================
+
+cashu_err_t wallet_pay_request(const payment_request_t *req) {
+    if (!req->has_amount || req->amount == 0)
+        return CASHU_ERR_INVALID_PAYMENT_REQUEST;
+
+    // find first post
+    const payment_request_transport_t *post_tr = NULL;
+    for (size_t i = 0; i < req->transport_count; i++) {
+        if (strcmp(req->transports[i].type, "post") == 0 &&
+            req->transports[i].target) {
+            post_tr = &req->transports[i];
+            break;
+        }
+    }
+    if (!post_tr) return CASHU_ERR_INVALID_PAYMENT_REQUEST;
+
+    // if a mint list is given, verify active mint is acceptable
+    if (req->mint_count > 0) {
+        int ok = 0;
+        for (size_t i = 0; i < req->mint_count && !ok; i++)
+            if (strcmp(req->mints[i], s_mint_url) == 0) ok = 1;
+        if (!ok) return CASHU_ERR_INVALID_PAYMENT_REQUEST;
+    }
+
+    char *token = NULL;
+    cashu_err_t err = wallet_send(req->amount, &token);
+    if (err != CASHU_OK) return err;
+
+    // decode the token to get raw proofs for the JSON payload
+    token_t tok;
+    err = token_decode(token, &tok);
+    if (err != CASHU_OK) {
+        wallet_receive(token); free(token); return err;
+    }
+
+    char *body = json_pr_payload(req->id, NULL,
+                                 tok.mint_url, s_unit,
+                                 tok.proofs, tok.proof_count);
+    token_free(&tok);
+    if (!body) {
+        wallet_receive(token); free(token); return CASHU_ERR_OOM;
+    }
+
+    err = cashu_http_post_raw(post_tr->target, body);
+    free(body);
+
+    if (err != CASHU_OK) {
+        // failed - receive ussed proofs
+        wallet_receive(token);
+    }
+    free(token);
     return err;
 }
 

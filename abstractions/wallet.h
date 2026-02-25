@@ -72,6 +72,10 @@ cashu_err_t wallet_melt(const melt_quote_t *melt_q);
 cashu_err_t wallet_send(uint64_t amount, char **token_out);
 cashu_err_t wallet_receive(const char *token);
 
+// sends amount to req-->transport-->target
+// if req fails, the token is returned to the wallet
+cashu_err_t wallet_pay_request(const payment_request_t *req);
+
 // ==============================================================================
 //                                 swap (lowlevel)
 // =============================================================================

@@ -27,6 +27,13 @@ static cJSON *proof_to_cjson(const proof_t *p) {
     cJSON_AddStringToObject(obj, "id", p->id);
     cJSON_AddStringToObject(obj, "secret", p->secret);
     cJSON_AddStringToObject(obj, "C", c_hex);
+    if (p->has_dleq && p->dleq_e[0] && p->dleq_s[0] && p->dleq_r[0]) {
+        cJSON *dleq = cJSON_CreateObject();
+        cJSON_AddStringToObject(dleq, "e", p->dleq_e);
+        cJSON_AddStringToObject(dleq, "s", p->dleq_s);
+        cJSON_AddStringToObject(dleq, "r", p->dleq_r);
+        cJSON_AddItemToObject(obj, "dleq", dleq);
+    }
     return obj;
 }
 
@@ -92,6 +99,20 @@ char *json_swap_request(const proof_t *inputs, size_t inp_n,
     for (size_t i = 0; i < out_n; i++)
         cJSON_AddItemToArray(out_arr, blinded_message_to_cjson(&outputs[i]));
     cJSON_AddItemToObject(root, "outputs", out_arr);
+    return render(root);
+}
+char *json_pr_payload(const char *id, const char *memo,
+                      const char *mint, const char *unit,
+                      const proof_t *proofs, size_t proof_count) {
+    cJSON *root = cJSON_CreateObject();
+    if (id)   cJSON_AddStringToObject(root, "id",   id);
+    if (memo) cJSON_AddStringToObject(root, "memo", memo);
+    cJSON_AddStringToObject(root, "mint", mint);
+    cJSON_AddStringToObject(root, "unit", unit);
+    cJSON *arr = cJSON_CreateArray();
+    for (size_t i = 0; i < proof_count; i++)
+        cJSON_AddItemToArray(arr, proof_to_cjson(&proofs[i]));
+    cJSON_AddItemToObject(root, "proofs", arr);
     return render(root);
 }
 
@@ -195,9 +216,24 @@ cashu_err_t json_parse_signatures(const char *json, blind_signature_t **out, siz
         cJSON *id     = cJSON_GetObjectItemCaseSensitive(item, "id");
         cJSON *C_     = cJSON_GetObjectItemCaseSensitive(item, "C_");
 
-        (*out)[i].amount = cJSON_IsNumber(amount) ? (uint64_t)amount->valuedouble : 0;
-        (*out)[i].id     = cJSON_IsString(id) ? strdup(id->valuestring) : NULL;
-        (*out)[i].C_     = cJSON_IsString(C_) ? strdup(C_->valuestring) : NULL;
+        (*out)[i].amount    = cJSON_IsNumber(amount) ? (uint64_t)amount->valuedouble : 0;
+        (*out)[i].id        = cJSON_IsString(id) ? strdup(id->valuestring) : NULL;
+        (*out)[i].C_        = cJSON_IsString(C_) ? strdup(C_->valuestring) : NULL;
+        (*out)[i].has_dleq  = false;
+
+        // optional dleq object with e and s hex strings
+        cJSON *dleq = cJSON_GetObjectItemCaseSensitive(item, "dleq");
+        if (cJSON_IsObject(dleq)) {
+            cJSON *e = cJSON_GetObjectItemCaseSensitive(dleq, "e");
+            cJSON *s = cJSON_GetObjectItemCaseSensitive(dleq, "s");
+            if (cJSON_IsString(e) && cJSON_IsString(s)) {
+                strncpy((*out)[i].dleq_e, e->valuestring, 64);
+                (*out)[i].dleq_e[64] = '\0';
+                strncpy((*out)[i].dleq_s, s->valuestring, 64);
+                (*out)[i].dleq_s[64] = '\0';
+                (*out)[i].has_dleq = true;
+            }
+        }
         i++;
     }
 
@@ -286,3 +322,4 @@ cashu_err_t json_parse_keysets(const char *json, keyset_t **out, size_t *count) 
     cJSON_Delete(root);
     return CASHU_OK;
 }
+
